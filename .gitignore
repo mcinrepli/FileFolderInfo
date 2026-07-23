@@ -1,0 +1,8 @@
+build/
+dist/*.dll
+dist/*.zip
+dist/*.exe
+test/*.exe
+test/clone_logic_test
+test/logic_test
+*.o
