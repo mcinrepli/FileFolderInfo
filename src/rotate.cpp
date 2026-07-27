@@ -1,8 +1,12 @@
+// Поворот JPEG через прямой патч тега EXIF Orientation — БЕЗ перекодирования
+// пикселей. Обоснование смены подхода (после двух неудачных попыток через
+// WIC decode/encode): тот путь оказался и медленным (зависания Проводника
+// на 30-60 сек, а на повторном вызове — насмерть), и разрушал остальные
+// EXIF-метаданные (GPS и т.д.) при перекодировании. Патч тега — то, как
+// сами телефоны в большинстве случаев и обозначают поворот: не трогая
+// пиксели, вообще не трогая никакие другие метаданные, мгновенно.
 #include "common.h"
 #include "strings.h"
-#include <wincodec.h>
-#include <wincodecsdk.h>
-#include <propvarutil.h>
 
 namespace {
 
@@ -18,144 +22,146 @@ std::wstring GetExtLowerLocal(const std::wstring& path)
 bool IsRotatableImageExtension(const std::wstring& path)
 {
     std::wstring ext = GetExtLowerLocal(path);
-    return ext == L"jpg" || ext == L"jpeg" || ext == L"png" || ext == L"bmp" ||
-           ext == L"tif" || ext == L"tiff" || ext == L"gif";
+    return ext == L"jpg" || ext == L"jpeg";
 }
 
-// Возвращает S_OK при успехе. При неудаче временный файл подчищается сам,
-// оригинал не трогается (либо остаётся нетронутым, либо восстановлен).
-HRESULT RotateImageFile(const std::wstring& path, bool rotateRight)
+// Таблица "довернуть текущую ориентацию ещё на 90° по/против часовой" —
+// выведена из канонической таблицы коррекции (sylvana.net/exif_orientation),
+// разложением каждого значения на (поворот, есть_отражение) и добавлением
+// +/-90° к повороту при неизменном отражении. index = текущая ориентация (1-8).
+const int kRotateCW[9]  = { 0, 6, 5, 8, 7, 4, 3, 2, 1 };
+const int kRotateCCW[9] = { 0, 8, 7, 6, 5, 2, 1, 4, 3 };
+
+// Находит абсолютное смещение в файле 2-байтового значения тега Orientation
+// (0x0112) внутри EXIF/APP1, если он там есть. Возвращает 0, если не нашли.
+// bigEndian получает порядок байт TIFF-блока (нужен, чтобы прочитать/записать
+// значение правильно).
+DWORD FindOrientationValueOffset(HANDLE hFile, bool* bigEndianOut)
+{
+    // Проверяем SOI
+    BYTE soi[2];
+    DWORD read = 0;
+    SetFilePointer(hFile, 0, nullptr, FILE_BEGIN);
+    if (!ReadFile(hFile, soi, 2, &read, nullptr) || read != 2) return 0;
+    if (soi[0] != 0xFF || soi[1] != 0xD8) return 0;
+
+    DWORD pos = 2;
+    for (int guard = 0; guard < 200; guard++) {
+        BYTE marker[2];
+        SetFilePointer(hFile, pos, nullptr, FILE_BEGIN);
+        if (!ReadFile(hFile, marker, 2, &read, nullptr) || read != 2) return 0;
+        if (marker[0] != 0xFF) return 0;
+        if (marker[1] == 0xD8 || marker[1] == 0xD9) return 0;   // SOI/EOI без длины
+        if (marker[1] == 0xDA) return 0;                          // Start of Scan — EXIF дальше не бывает
+        if (marker[1] >= 0xD0 && marker[1] <= 0xD7) { pos += 2; continue; } // restart-маркеры без длины
+
+        BYTE lenBuf[2];
+        if (!ReadFile(hFile, lenBuf, 2, &read, nullptr) || read != 2) return 0;
+        WORD segLen = (WORD)((lenBuf[0] << 8) | lenBuf[1]); // длина сегмента - BIG ENDIAN, включает эти 2 байта
+        if (segLen < 2) return 0;
+
+        DWORD payloadStart = pos + 4;
+
+        if (marker[1] == 0xE1) { // APP1 — кандидат на Exif
+            BYTE sig[6];
+            if (segLen >= 8 && ReadFile(hFile, sig, 6, &read, nullptr) && read == 6 &&
+                memcmp(sig, "Exif\0\0", 6) == 0) {
+                DWORD tiffStart = payloadStart + 6;
+
+                BYTE bo[4]; // byte order (2) + magic (2)
+                SetFilePointer(hFile, tiffStart, nullptr, FILE_BEGIN);
+                if (!ReadFile(hFile, bo, 4, &read, nullptr) || read != 4) return 0;
+                bool bigEndian;
+                if (bo[0] == 'I' && bo[1] == 'I') bigEndian = false;
+                else if (bo[0] == 'M' && bo[1] == 'M') bigEndian = true;
+                else return 0;
+
+                auto rd16 = [&](const BYTE* p) -> WORD {
+                    return bigEndian ? (WORD)((p[0] << 8) | p[1]) : (WORD)((p[1] << 8) | p[0]);
+                };
+                auto rd32 = [&](const BYTE* p) -> DWORD {
+                    return bigEndian
+                        ? ((DWORD)p[0] << 24) | ((DWORD)p[1] << 16) | ((DWORD)p[2] << 8) | p[3]
+                        : ((DWORD)p[3] << 24) | ((DWORD)p[2] << 16) | ((DWORD)p[1] << 8) | p[0];
+                };
+
+                WORD magic = rd16(bo + 2);
+                if (magic != 0x002A) return 0;
+
+                BYTE ifdOffBuf[4];
+                SetFilePointer(hFile, tiffStart + 4, nullptr, FILE_BEGIN);
+                if (!ReadFile(hFile, ifdOffBuf, 4, &read, nullptr) || read != 4) return 0;
+                DWORD ifd0Off = rd32(ifdOffBuf);
+                if (ifd0Off == 0 || ifd0Off > 0x100000) return 0; // разумный предел
+
+                DWORD ifd0Pos = tiffStart + ifd0Off;
+                BYTE cntBuf[2];
+                SetFilePointer(hFile, ifd0Pos, nullptr, FILE_BEGIN);
+                if (!ReadFile(hFile, cntBuf, 2, &read, nullptr) || read != 2) return 0;
+                WORD entryCount = rd16(cntBuf);
+                if (entryCount > 200) return 0; // защита от мусора
+
+                for (WORD i = 0; i < entryCount; i++) {
+                    DWORD entryPos = ifd0Pos + 2 + (DWORD)i * 12;
+                    BYTE entry[12];
+                    SetFilePointer(hFile, entryPos, nullptr, FILE_BEGIN);
+                    if (!ReadFile(hFile, entry, 12, &read, nullptr) || read != 12) return 0;
+                    WORD tag = rd16(entry);
+                    WORD type = rd16(entry + 2);
+                    DWORD count = rd32(entry + 4);
+                    if (tag == 0x0112) {
+                        if (type != 3 || count != 1) return 0; // не тот формат — не трогаем
+                        if (bigEndianOut) *bigEndianOut = bigEndian;
+                        return entryPos + 8; // SHORT-значение лежит в первых 2 байтах 4-байтового поля
+                    }
+                }
+            }
+        }
+
+        pos += 2 + segLen; // к следующему маркеру
+    }
+    return 0;
+}
+
+HRESULT RotateJpegOrientation(const std::wstring& path, bool rotateRight)
 {
     FILETIME ftCreate, ftAccess, ftWrite;
     if (!GetFileTimes(path, &ftCreate, &ftAccess, &ftWrite))
         return E_FAIL;
 
-    IWICImagingFactory* factory = nullptr;
-    HRESULT hr = CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&factory));
-    if (FAILED(hr)) return hr;
+    HANDLE hFile = CreateFileW(path.c_str(), GENERIC_READ | GENERIC_WRITE,
+                                FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (hFile == INVALID_HANDLE_VALUE)
+        return HRESULT_FROM_WIN32(GetLastError());
 
-    IWICBitmapDecoder* decoder = nullptr;
-    hr = factory->CreateDecoderFromFilename(path.c_str(), nullptr, GENERIC_READ,
-                                             WICDecodeMetadataCacheOnLoad, &decoder);
-    if (FAILED(hr)) { factory->Release(); return hr; }
-
-    UINT frameCount = 0;
-    decoder->GetFrameCount(&frameCount);
-    if (frameCount != 1) {
-        // многокадровые (анимированные GIF/TIFF) не трогаем - велик риск испортить анимацию
-        decoder->Release();
-        factory->Release();
-        return HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED);
+    bool bigEndian = false;
+    DWORD valueOff = FindOrientationValueOffset(hFile, &bigEndian);
+    if (valueOff == 0) {
+        CloseHandle(hFile);
+        return HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED); // тега нет — не трогаем файл вообще
     }
 
-    IWICBitmapFrameDecode* frame = nullptr;
-    hr = decoder->GetFrame(0, &frame);
-    if (FAILED(hr)) { decoder->Release(); factory->Release(); return hr; }
+    BYTE valBuf[2];
+    DWORD rw = 0;
+    SetFilePointer(hFile, valueOff, nullptr, FILE_BEGIN);
+    if (!ReadFile(hFile, valBuf, 2, &rw, nullptr) || rw != 2) { CloseHandle(hFile); return E_FAIL; }
 
-    GUID containerFormat = {};
-    decoder->GetContainerFormat(&containerFormat);
+    int cur = bigEndian ? ((valBuf[0] << 8) | valBuf[1]) : ((valBuf[1] << 8) | valBuf[0]);
+    if (cur < 1 || cur > 8) cur = 1;
+    int next = rotateRight ? kRotateCW[cur] : kRotateCCW[cur];
 
-    IWICBitmapFlipRotator* rotator = nullptr;
-    hr = factory->CreateBitmapFlipRotator(&rotator);
-    if (SUCCEEDED(hr))
-        hr = rotator->Initialize(frame, rotateRight ? WICBitmapTransformRotate90 : WICBitmapTransformRotate270);
+    BYTE outBuf[2];
+    if (bigEndian) { outBuf[0] = (BYTE)(next >> 8); outBuf[1] = (BYTE)(next & 0xFF); }
+    else            { outBuf[0] = (BYTE)(next & 0xFF); outBuf[1] = (BYTE)(next >> 8); }
 
-    if (FAILED(hr)) {
-        if (rotator) rotator->Release();
-        frame->Release(); decoder->Release(); factory->Release();
-        return hr;
-    }
+    SetFilePointer(hFile, valueOff, nullptr, FILE_BEGIN);
+    BOOL ok = WriteFile(hFile, outBuf, 2, &rw, nullptr) && rw == 2;
 
-    std::wstring tmpPath = path + L".rotating.tmp";
+    if (ok)
+        SetFileTime(hFile, &ftCreate, &ftAccess, &ftWrite); // тот же дескриптор, дата восстановлена сразу
 
-    IWICStream* stream = nullptr;
-    hr = factory->CreateStream(&stream);
-    if (SUCCEEDED(hr)) hr = stream->InitializeFromFilename(tmpPath.c_str(), GENERIC_WRITE);
-
-    IWICBitmapEncoder* encoder = nullptr;
-    if (SUCCEEDED(hr)) hr = factory->CreateEncoder(containerFormat, nullptr, &encoder);
-    if (SUCCEEDED(hr)) hr = encoder->Initialize(stream, WICBitmapEncoderNoCache);
-
-    IWICBitmapFrameEncode* frameEncode = nullptr;
-    IPropertyBag2* propBag = nullptr;
-    if (SUCCEEDED(hr)) hr = encoder->CreateNewFrame(&frameEncode, &propBag);
-
-    // Для JPEG выставляем высокое качество явно — WIC перекодирует пиксели заново
-    // (это не блочный lossless-поворот вроде jpegtran), так что при поворотах JPEG
-    // будет небольшое дополнительное поколение сжатия; держим качество высоким,
-    // чтобы эта потеря была практически незаметна.
-    if (SUCCEEDED(hr) && propBag && containerFormat == GUID_ContainerFormatJpeg) {
-        PROPBAG2 opt = {};
-        opt.pstrName = (LPOLESTR)L"ImageQuality";
-        VARIANT var;
-        VariantInit(&var);
-        var.vt = VT_R4;
-        var.fltVal = 0.92f;
-        propBag->Write(1, &opt, &var);
-    }
-
-    if (SUCCEEDED(hr)) hr = frameEncode->Initialize(propBag);
-
-    UINT w = 0, h = 0;
-    if (SUCCEEDED(hr)) hr = rotator->GetSize(&w, &h);
-    if (SUCCEEDED(hr)) hr = frameEncode->SetSize(w, h);
-
-    WICPixelFormatGUID pfRequested = {}, pf = {};
-    if (SUCCEEDED(hr)) hr = rotator->GetPixelFormat(&pf);
-    pfRequested = pf;
-    if (SUCCEEDED(hr)) hr = frameEncode->SetPixelFormat(&pf); // pf МОЖЕТ измениться на то, что реально поддержит кодер
-
-    IWICFormatConverter* converter = nullptr;
-    IWICBitmapSource* writeSource = rotator;
-    if (SUCCEEDED(hr) && !IsEqualGUID(pf, pfRequested)) {
-        // Кодер не поддерживает исходный формат напрямую — нужна конвертация,
-        // иначе запись пойдёт с неверной интерпретацией байт (риск как раз
-        // такого раздутия/порчи файла, какое было обнаружено на реальном фото).
-        hr = factory->CreateFormatConverter(&converter);
-        if (SUCCEEDED(hr))
-            hr = converter->Initialize(rotator, pf, WICBitmapDitherTypeNone, nullptr, 0, WICBitmapPaletteTypeCustom);
-        if (SUCCEEDED(hr))
-            writeSource = converter;
-    }
-
-    if (SUCCEEDED(hr)) hr = frameEncode->WriteSource(writeSource, nullptr);
-    if (converter) converter->Release();
-    if (SUCCEEDED(hr)) hr = frameEncode->Commit();
-    if (SUCCEEDED(hr)) hr = encoder->Commit();
-
-    if (propBag) propBag->Release();
-    if (frameEncode) frameEncode->Release();
-    if (encoder) encoder->Release();
-    if (stream) stream->Release();
-    rotator->Release();
-    frame->Release();
-    decoder->Release();
-    factory->Release();
-
-    if (FAILED(hr)) {
-        DeleteFileW(tmpPath.c_str());
-        return hr;
-    }
-
-    // Атомарно подменяем оригинал результатом.
-    if (!ReplaceFileW(path.c_str(), tmpPath.c_str(), nullptr, 0, nullptr, nullptr)) {
-        DeleteFileW(path.c_str());
-        if (!MoveFileW(tmpPath.c_str(), path.c_str())) {
-            DeleteFileW(tmpPath.c_str());
-            return HRESULT_FROM_WIN32(GetLastError());
-        }
-    }
-
-    // Восстанавливаем оригинальные дату изменения/создания/доступа.
-    HANDLE h2 = CreateFileW(path.c_str(), FILE_WRITE_ATTRIBUTES,
-                            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                            nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
-    if (h2 != INVALID_HANDLE_VALUE) {
-        SetFileTime(h2, &ftCreate, &ftAccess, &ftWrite);
-        CloseHandle(h2);
-    }
-
-    return S_OK;
+    CloseHandle(hFile);
+    return ok ? S_OK : E_FAIL;
 }
 
 void DoRotateOperation(HWND owner, const SelectionInfo& sel, bool rotateRight)
@@ -165,17 +171,12 @@ void DoRotateOperation(HWND owner, const SelectionInfo& sel, bool rotateRight)
         return;
     }
 
-    HRESULT hrCo = CoInitialize(nullptr);
-    bool needUninit = (hrCo == S_OK);
-
     int done = 0, skipped = 0;
     for (auto& p : sel.paths) {
         if (!IsRotatableImageExtension(p)) { skipped++; continue; }
-        HRESULT hr = RotateImageFile(p, rotateRight);
+        HRESULT hr = RotateJpegOrientation(p, rotateRight);
         if (SUCCEEDED(hr)) done++; else skipped++;
     }
-
-    if (needUninit) CoUninitialize();
 
     wchar_t msg[256];
     swprintf(msg, 256, S_MSG_ROTATE_DONE_FMT, done, skipped);

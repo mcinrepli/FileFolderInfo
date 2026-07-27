@@ -123,7 +123,7 @@ IFACEMETHODIMP CShellExt::QueryContextMenu(HMENU hMenu, UINT indexMenu, UINT idC
     // ---- подменю "Повернуть" (только если ВСЕ выбранные — распознанные статичные изображения) ----
     bool allRotatable = sel.allFiles && !sel.paths.empty();
     if (allRotatable) {
-        static const wchar_t* rotExts[] = { L"jpg", L"jpeg", L"png", L"bmp", L"tif", L"tiff", L"gif" };
+        static const wchar_t* rotExts[] = { L"jpg", L"jpeg" };
         for (auto& p : sel.paths) {
             size_t dot = p.find_last_of(L'.');
             bool ok = false;
