@@ -156,11 +156,24 @@ HRESULT RotateJpegOrientation(const std::wstring& path, bool rotateRight)
 
     SetFilePointer(hFile, valueOff, nullptr, FILE_BEGIN);
     BOOL ok = WriteFile(hFile, outBuf, 2, &rw, nullptr) && rw == 2;
-
-    if (ok)
-        SetFileTime(hFile, &ftCreate, &ftAccess, &ftWrite); // тот же дескриптор, дата восстановлена сразу
-
+    if (ok) FlushFileBuffers(hFile); // гарантируем, что запись реально дошла до диска до восстановления дат
     CloseHandle(hFile);
+
+    if (ok) {
+        // Отдельный, новый дескриптор — открытый ПОСЛЕ того, как файл точно
+        // дозаписан и закрыт. SetFileTime на ТОМ ЖЕ дескрипторе, которым
+        // только что писали, ненадёжен: ОС может обновить "дату изменения"
+        // из-за самой записи чуть позже (при сбросе кэша), уже после
+        // восстановления, и тем самым переписать его обратно.
+        HANDLE h2 = CreateFileW(path.c_str(), FILE_WRITE_ATTRIBUTES,
+                                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+        if (h2 != INVALID_HANDLE_VALUE) {
+            SetFileTime(h2, &ftCreate, &ftAccess, &ftWrite);
+            CloseHandle(h2);
+        }
+    }
+
     return ok ? S_OK : E_FAIL;
 }
 

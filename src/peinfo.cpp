@@ -253,7 +253,15 @@ void Cmd_ShowDependencies(HWND owner, const SelectionInfo& sel)
         return;
     }
 
-    const std::wstring& startPath = sel.paths[0];
+    std::wstring startPath = sel.paths[0];
+    ShortcutInfo sc = ResolveShortcut(startPath);
+    if (sc.isShortcut) {
+        if (!sc.resolved || !sc.targetExists || sc.targetIsFolder) {
+            MessageBoxW(owner, S_MSG_NOT_PE, S_MSG_TITLE, MB_OK | MB_ICONINFORMATION);
+            return;
+        }
+        startPath = sc.targetPath;
+    }
 
     PeParsed rootPe;
     if (!ParsePe(startPath, &rootPe)) {

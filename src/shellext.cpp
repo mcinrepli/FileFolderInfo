@@ -151,9 +151,14 @@ IFACEMETHODIMP CShellExt::QueryContextMenu(HMENU hMenu, UINT indexMenu, UINT idC
     addItemTo(hSub, CMD_SHOW_SIZE, S_ITEM_SHOW_SIZE);
     addItemTo(hSub, CMD_METADATA, S_ITEM_METADATA);
     if (!multi && sel.allFiles && !sel.paths.empty()) {
-        size_t dot = sel.paths[0].find_last_of(L'.');
+        std::wstring checkPath = sel.paths[0];
+        ShortcutInfo sc = ResolveShortcut(checkPath);
+        if (sc.isShortcut && sc.resolved && sc.targetExists && !sc.targetIsFolder)
+            checkPath = sc.targetPath; // для ярлыка смотрим на расширение ЦЕЛИ, не самого .lnk
+
+        size_t dot = checkPath.find_last_of(L'.');
         if (dot != std::wstring::npos) {
-            std::wstring ext = sel.paths[0].substr(dot + 1);
+            std::wstring ext = checkPath.substr(dot + 1);
             for (auto& c : ext) c = (wchar_t)towlower(c);
             if (ext == L"exe" || ext == L"dll" || ext == L"sys" || ext == L"ocx")
                 addItemTo(hSub, CMD_DEPENDENCIES, S_ITEM_DEPENDENCIES);

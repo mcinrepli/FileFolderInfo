@@ -370,14 +370,6 @@ std::vector<InfoRow> BuildRegularFileMetadataRows(const std::wstring& targetPath
     return rows;
 }
 
-struct ShortcutInfo {
-    bool isShortcut = false;
-    bool resolved = false;
-    bool targetExists = false;
-    bool targetIsFolder = false;
-    std::wstring targetPath;
-};
-
 ShortcutInfo ResolveShortcut(const std::wstring& lnkPath)
 {
     ShortcutInfo info;

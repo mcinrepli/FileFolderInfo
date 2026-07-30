@@ -107,5 +107,15 @@ void Cmd_RotateRight(HWND owner, const SelectionInfo& sel);
 // ---- peinfo.cpp: разбор PE-заголовка (exe/dll) ----
 bool GetPeArchAndDotNetInfo(const std::wstring& path, std::wstring* archText, std::wstring* dotNetVersionText);
 
+// ---- metadata.cpp: разбор ярлыков (.lnk) — нужно и в shellext.cpp (видимость пункта «Зависимости») ----
+struct ShortcutInfo {
+    bool isShortcut = false;
+    bool resolved = false;
+    bool targetExists = false;
+    bool targetIsFolder = false;
+    std::wstring targetPath;
+};
+ShortcutInfo ResolveShortcut(const std::wstring& lnkPath);
+
 // ---- shellext.h/.cpp ----
 class CShellExt; // forward
