@@ -107,10 +107,12 @@ void Cmd_RotateRight(HWND owner, const SelectionInfo& sel);
 // ---- peinfo.cpp: разбор PE-заголовка (exe/dll) ----
 bool GetPeArchAndDotNetInfo(const std::wstring& path, std::wstring* archText, std::wstring* dotNetVersionText);
 
-// ---- metadata.cpp: разбор ярлыков (.lnk) — нужно и в shellext.cpp (видимость пункта «Зависимости») ----
+// ---- metadata.cpp: разбор ярлыков (.lnk) — ручной разбор по MS-SHLLINK, без COM/IShellLinkW ----
 struct ShortcutInfo {
     bool isShortcut = false;
-    bool resolved = false;
+    bool resolved = false;          // сам файл .lnk прочитан и разобран как ShellLink
+    bool hasLocalPath = false;      // нашли LocalBasePath (обычный файл/папка на диске)
+    bool isVirtualLocation = false; // есть только IDList, LinkInfo нет — системное расположение (Панель управления и т.п.)
     bool targetExists = false;
     bool targetIsFolder = false;
     std::wstring targetPath;

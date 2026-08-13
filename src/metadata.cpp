@@ -370,40 +370,98 @@ std::vector<InfoRow> BuildRegularFileMetadataRows(const std::wstring& targetPath
     return rows;
 }
 
+// Ручной разбор .lnk по спецификации MS-SHLLINK — без единого вызова COM.
+// Причина смены подхода: IShellLinkW/IPersistFile давали нестабильный результат
+// (то же самое из раза в раз то срабатывало, то нет, без видимой закономерности,
+// в том числе на совершенно обычных путях без ничего экзотического — то есть
+// дело было не в целях ярлыков, а в самом механизме COM-вызова внутри
+// расширения). Формат .lnk стабильный и документированный — разбор проверен
+// на трёх реальных присланных файлах (обычный exe, обычная папка, и ярлык на
+// Панель управления — у него, в отличие от первых двух, есть только
+// LinkTargetIDList и нет LinkInfo вообще, это системное расположение, а не
+// путь к файлу).
 ShortcutInfo ResolveShortcut(const std::wstring& lnkPath)
 {
     ShortcutInfo info;
     if (GetExtLower(lnkPath) != L"lnk") return info;
     info.isShortcut = true;
 
-    HRESULT hrCo = CoInitialize(nullptr);
-    bool needUninit = (hrCo == S_OK);
+    HANDLE hFile = CreateFileW(lnkPath.c_str(), GENERIC_READ, FILE_SHARE_READ,
+                                nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (hFile == INVALID_HANDLE_VALUE) return info;
 
-    IShellLinkW* psl = nullptr;
-    HRESULT hr = CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER, IID_IShellLinkW, (void**)&psl);
-    if (SUCCEEDED(hr) && psl) {
-        IPersistFile* ppf = nullptr;
-        if (SUCCEEDED(psl->QueryInterface(IID_IPersistFile, (void**)&ppf)) && ppf) {
-            if (SUCCEEDED(ppf->Load(lnkPath.c_str(), STGM_READ))) {
-                wchar_t buf[MAX_PATH * 2] = {};
-                WIN32_FIND_DATAW wfd = {};
-                if (SUCCEEDED(psl->GetPath(buf, MAX_PATH * 2, &wfd, SLGP_RAWPATH))) {
-                    info.resolved = true;
-                    info.targetPath = buf;
-                }
-            }
-            ppf->Release();
-        }
-        psl->Release();
+    LARGE_INTEGER sz;
+    if (!GetFileSizeEx(hFile, &sz) || sz.QuadPart < 76 || sz.QuadPart > 4 * 1024 * 1024) {
+        CloseHandle(hFile);
+        return info;
+    }
+    DWORD size = (DWORD)sz.QuadPart;
+
+    std::vector<BYTE> data(size);
+    DWORD read = 0;
+    BOOL ok = ReadFile(hFile, data.data(), size, &read, nullptr);
+    CloseHandle(hFile);
+    if (!ok || read != size) return info;
+
+    auto rd16 = [&](DWORD off) -> WORD {
+        return (WORD)(data[off] | (data[off + 1] << 8));
+    };
+    auto rd32 = [&](DWORD off) -> DWORD {
+        return (DWORD)data[off] | ((DWORD)data[off + 1] << 8) |
+               ((DWORD)data[off + 2] << 16) | ((DWORD)data[off + 3] << 24);
+    };
+
+    if (rd32(0) != 0x4C) return info; // HeaderSize должен быть ровно 76 (0x4C)
+
+    DWORD linkFlags = rd32(20);
+    bool hasIDList = (linkFlags & 0x1) != 0;
+    bool hasLinkInfo = (linkFlags & 0x2) != 0;
+
+    info.resolved = true; // файл прочитан и заголовок опознан как ShellLink
+
+    DWORD pos = 76;
+    if (hasIDList) {
+        if (pos + 2 > size) return info;
+        WORD idListSize = rd16(pos);
+        pos += 2 + idListSize;
+        if (pos > size) return info;
     }
 
-    if (needUninit) CoUninitialize();
+    if (hasLinkInfo) {
+        if (pos + 20 > size) return info;
+        DWORD liStart = pos;
+        DWORD liSize = rd32(pos);
+        DWORD liFlags = rd32(pos + 8);
+        DWORD localBaseOff = rd32(pos + 16);
 
-    if (info.resolved && !info.targetPath.empty()) {
+        if ((liFlags & 0x1) && localBaseOff && liStart + localBaseOff < size) {
+            DWORD strStart = liStart + localBaseOff;
+            DWORD strEnd = strStart;
+            while (strEnd < size && data[strEnd] != 0) strEnd++;
+            // LocalBasePath — всегда ANSI-строка (текущая кодовая страница), независимо от IsUnicode
+            std::string ansi(reinterpret_cast<char*>(&data[strStart]), strEnd - strStart);
+            int wlen = MultiByteToWideChar(CP_ACP, 0, ansi.c_str(), -1, nullptr, 0);
+            if (wlen > 0) {
+                std::wstring wpath(wlen, L'\0');
+                MultiByteToWideChar(CP_ACP, 0, ansi.c_str(), -1, &wpath[0], wlen);
+                if (!wpath.empty() && wpath.back() == L'\0') wpath.pop_back();
+                info.targetPath = wpath;
+                info.hasLocalPath = !wpath.empty();
+            }
+        }
+
+        if (liSize == 0 || liStart + liSize < liStart) return info; // защита от переполнения
+        pos = liStart + liSize;
+    } else if (hasIDList) {
+        info.isVirtualLocation = true; // только IDList — системное расположение (Панель управления и т.п.)
+    }
+
+    if (info.hasLocalPath) {
         DWORD attrs = GetFileAttributesW(info.targetPath.c_str());
         info.targetExists = (attrs != INVALID_FILE_ATTRIBUTES);
         info.targetIsFolder = info.targetExists && (attrs & FILE_ATTRIBUTE_DIRECTORY) != 0;
     }
+
     return info;
 }
 
@@ -416,6 +474,16 @@ std::vector<InfoRow> BuildFileMetadataRows(const std::wstring& targetPath)
     std::vector<InfoRow> rows;
 
     if (!sc.resolved) {
+        rows.push_back({ S_META_SHORTCUT_STATUS, S_SHORTCUT_UNREADABLE });
+        return rows;
+    }
+
+    if (sc.isVirtualLocation) {
+        rows.push_back({ S_META_SHORTCUT_STATUS, S_SHORTCUT_VIRTUAL });
+        return rows;
+    }
+
+    if (!sc.hasLocalPath) {
         rows.push_back({ S_META_SHORTCUT_STATUS, S_SHORTCUT_UNREADABLE });
         return rows;
     }
