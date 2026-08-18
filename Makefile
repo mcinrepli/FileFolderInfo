@@ -20,4 +20,5 @@ $(TARGET): $(OBJ)
 	x86_64-w64-mingw32-strip --strip-unneeded $@
 
 clean:
-	rm -rf build dist
+	rm -rf build
+	rm -f dist/FileFolderInfo.dll
