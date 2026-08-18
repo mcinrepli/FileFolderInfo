@@ -535,6 +535,9 @@ std::vector<InfoRow> BuildFileMetadataRows(const std::wstring& targetPath)
 {
     ScopeDiag _diag(L"BuildFileMetadataRows", targetPath);
     ShortcutInfo sc = ResolveShortcut(targetPath);
+    DiagLog(L"  sc: isShortcut=%d resolved=%d hasLocalPath=%d isVirtual=%d targetExists=%d targetIsFolder=%d targetPath=%ls",
+            (int)sc.isShortcut, (int)sc.resolved, (int)sc.hasLocalPath, (int)sc.isVirtualLocation,
+            (int)sc.targetExists, (int)sc.targetIsFolder, sc.targetPath.c_str());
     if (!sc.isShortcut)
         return BuildRegularFileMetadataRows(targetPath);
 
@@ -575,8 +578,9 @@ std::vector<InfoRow> BuildFileMetadataRows(const std::wstring& targetPath)
 
 void Cmd_ShowMetadata(HWND owner, const SelectionInfo& sel)
 {
-    DiagLog(L"Cmd_ShowMetadata ENTER, %u path(s), allFolders=%d allFiles=%d",
-            (unsigned)sel.paths.size(), (int)sel.allFolders, (int)sel.allFiles);
+    DiagLog(L"Cmd_ShowMetadata ENTER, %u path(s), allFolders=%d allFiles=%d, path[0]=%ls",
+            (unsigned)sel.paths.size(), (int)sel.allFolders, (int)sel.allFiles,
+            sel.paths.empty() ? L"(none)" : sel.paths[0].c_str());
     if (sel.paths.empty()) {
         MessageBoxW(owner, S_MSG_NOTHING_SELECTED, S_MSG_TITLE, MB_OK | MB_ICONINFORMATION);
         return;
