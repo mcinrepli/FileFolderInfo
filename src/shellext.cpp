@@ -3,6 +3,9 @@
 #include "strings.h"
 #include <strsafe.h>
 #include <cwctype>
+#include <cstring>
+
+void DiagLog(const wchar_t* fmt, ...); // временная диагностика, определена в metadata.cpp
 
 CShellExt::CShellExt() : m_cRef(1), m_pDataObj(nullptr)
 {
@@ -59,6 +62,9 @@ IFACEMETHODIMP CShellExt::Initialize(LPCITEMIDLIST /*pidlFolder*/, IDataObject* 
 
 IFACEMETHODIMP CShellExt::QueryContextMenu(HMENU hMenu, UINT indexMenu, UINT idCmdFirst, UINT idCmdLast, UINT uFlags)
 {
+    DiagLog(L"QueryContextMenu ENTER this=%X idCmdFirst=%u idCmdLast=%u uFlags=0x%X",
+            (unsigned)(UINT_PTR)this, idCmdFirst, idCmdLast, uFlags);
+
     if (uFlags & CMF_DEFAULTONLY)
         return MAKE_HRESULT(SEVERITY_SUCCESS, FACILITY_NULL, 0);
 
@@ -66,6 +72,8 @@ IFACEMETHODIMP CShellExt::QueryContextMenu(HMENU hMenu, UINT indexMenu, UINT idC
         return MAKE_HRESULT(SEVERITY_SUCCESS, FACILITY_NULL, 0);
 
     SelectionInfo sel = GetSelectionInfo(m_pDataObj);
+    DiagLog(L"QueryContextMenu this=%X sel: %u path(s) allFolders=%d allFiles=%d",
+            (unsigned)(UINT_PTR)this, (unsigned)sel.paths.size(), (int)sel.allFolders, (int)sel.allFiles);
     bool multi = sel.paths.size() > 1;
     bool foldersOnly = sel.allFolders && !sel.paths.empty();
 
@@ -187,12 +195,49 @@ IFACEMETHODIMP CShellExt::QueryContextMenu(HMENU hMenu, UINT indexMenu, UINT idC
 
 IFACEMETHODIMP CShellExt::InvokeCommand(LPCMINVOKECOMMANDINFO pici)
 {
-    if (((ULONG_PTR)pici->lpVerb >> 16) != 0)
-        return E_INVALIDARG; // строковые verb-ы не поддерживаем
+    DiagLog(L"InvokeCommand ENTER this=%X rawVerb=0x%X cbSize=%u fMask=0x%X",
+            (unsigned)(UINT_PTR)this, (unsigned)(UINT_PTR)pici->lpVerb,
+            (unsigned)pici->cbSize, (unsigned)pici->fMask);
 
-    UINT cmd = LOWORD((ULONG_PTR)pici->lpVerb);
+    UINT cmd = 0;
+    bool haveCmd = false;
+
+    if (((ULONG_PTR)pici->lpVerb >> 16) == 0) {
+        cmd = LOWORD((ULONG_PTR)pici->lpVerb);
+        haveCmd = true;
+    } else {
+        // Похоже не на маленькое число в младшем слове, а на указатель — то есть
+        // строковый verb. Мы сами публикуем такой формат в GetCommandString/GCS_VERBW:
+        // "ffi_cmd_N". Раньше это просто отклонялось — судя по диагностике, Проводник
+        // временами вызывает именно так, и это надо разбирать, а не отбрасывать.
+        // CMINVOKECOMMANDINFOEX может нести ту же строку в Unicode (lpVerbW) —
+        // предпочитаем её; иначе разбираем lpVerb как ANSI (это LPCSTR по контракту).
+        const wchar_t* verbW = nullptr;
+        if (pici->cbSize >= sizeof(CMINVOKECOMMANDINFOEX)) {
+            auto* ex = reinterpret_cast<const CMINVOKECOMMANDINFOEX*>(pici);
+            if ((ex->fMask & CMIC_MASK_UNICODE) && ex->lpVerbW)
+                verbW = ex->lpVerbW;
+        }
+
+        if (verbW && wcsncmp(verbW, L"ffi_cmd_", 8) == 0) {
+            const wchar_t* p = verbW + 8;
+            while (*p >= L'0' && *p <= L'9') { cmd = cmd * 10 + (UINT)(*p - L'0'); p++; }
+            haveCmd = true;
+        } else if (!verbW && pici->lpVerb && strncmp(pici->lpVerb, "ffi_cmd_", 8) == 0) {
+            const char* p = pici->lpVerb + 8;
+            while (*p >= '0' && *p <= '9') { cmd = cmd * 10 + (UINT)(*p - '0'); p++; }
+            haveCmd = true;
+        }
+        DiagLog(L"InvokeCommand this=%X string verb (unicode=%d) parsed ok=%d -> cmd=%u",
+                (unsigned)(UINT_PTR)this, (int)(verbW != nullptr), (int)haveCmd, cmd);
+    }
+
+    if (!haveCmd)
+        return E_INVALIDARG;
+
     SelectionInfo sel = GetSelectionInfo(m_pDataObj);
     HWND hwnd = pici->hwnd;
+    DiagLog(L"InvokeCommand this=%X cmd=%u sel: %u path(s)", (unsigned)(UINT_PTR)this, cmd, (unsigned)sel.paths.size());
 
     switch (cmd) {
     case CMD_COPY_PATH:          Cmd_CopyPath(hwnd, sel); break;

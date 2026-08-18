@@ -8,6 +8,7 @@
 #include <propsys.h>
 #include <map>
 #include <algorithm>
+#include <cstdarg>
 
 // ------------------------------------------------------------------
 // MinGW-w64 не включает в propkey.h фото/GPS/изображенческие ключи
@@ -197,9 +198,60 @@ std::wstring DetectTextEncoding(const std::wstring& path)
 
 } // namespace
 
+// --- ВРЕМЕННАЯ диагностика: ищем, что именно тормозит/виснет в цепочке
+// SHCreateItemFromParsingName/GetProperty при разборе метаданных ЦЕЛИ
+// ярлыка. Пишет метки времени в %TEMP%\FileFolderInfo_diag.log через
+// чистый WinAPI (CreateFileW/WriteFile), без зависимости от режимов
+// открытия CRT-файлов. Убрать после того, как найдём причину.
+void DiagLog(const wchar_t* fmt, ...)
+{
+    wchar_t msg[512];
+    va_list args;
+    va_start(args, fmt);
+    vswprintf(msg, 512, fmt, args);
+    va_end(args);
+
+    SYSTEMTIME st;
+    GetLocalTime(&st);
+    wchar_t line[600];
+    swprintf(line, 600, L"[%02u:%02u:%02u.%03u] %ls\r\n",
+             st.wHour, st.wMinute, st.wSecond, st.wMilliseconds, msg);
+
+    wchar_t path[MAX_PATH];
+    if (!GetTempPathW(MAX_PATH, path)) return;
+    wcsncat(path, L"FileFolderInfo_diag.log", MAX_PATH - wcslen(path) - 1);
+
+    int n = WideCharToMultiByte(CP_UTF8, 0, line, -1, nullptr, 0, nullptr, nullptr);
+    if (n <= 0) return;
+    std::vector<char> utf8((size_t)n);
+    WideCharToMultiByte(CP_UTF8, 0, line, -1, utf8.data(), n, nullptr, nullptr);
+
+    HANDLE h = CreateFileW(path, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                            OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return;
+    DWORD written = 0;
+    WriteFile(h, utf8.data(), (DWORD)(n - 1), &written, nullptr); // n-1: без завершающего нуля
+    CloseHandle(h);
+}
+
+// RAII-обёртка: логирует вход и выход из функции (с временем) через ЛЮБОЙ
+// return, не трогая при этом сами return-ы — их в ResolveShortcut несколько.
+struct ScopeDiag {
+    const wchar_t* label;
+    ULONGLONG t0;
+    ScopeDiag(const wchar_t* lbl, const std::wstring& info) : label(lbl), t0(GetTickCount64()) {
+        DiagLog(L"%ls ENTER %ls", label, info.c_str());
+    }
+    ~ScopeDiag() {
+        DiagLog(L"%ls EXIT (%llu ms)", label, GetTickCount64() - t0);
+    }
+};
+
 std::vector<InfoRow> BuildRegularFileMetadataRows(const std::wstring& targetPath)
 {
     std::vector<InfoRow> rows;
+    ULONGLONG diagT0 = GetTickCount64();
+    DiagLog(L"START target=%ls", targetPath.c_str());
 
     if (IsTextLikeExtension(targetPath)) {
         std::wstring enc = DetectTextEncoding(targetPath);
@@ -218,11 +270,15 @@ std::vector<InfoRow> BuildRegularFileMetadataRows(const std::wstring& targetPath
         }
     }
 
+    ULONGLONG diagTCo = GetTickCount64();
     HRESULT hrCo = CoInitialize(nullptr);
+    DiagLog(L"  CoInitialize -> 0x%08X (%llu ms)", (unsigned)hrCo, GetTickCount64() - diagTCo);
     bool needUninit = (hrCo == S_OK);
 
     IShellItem2* psi = nullptr;
+    ULONGLONG diagTSh = GetTickCount64();
     HRESULT hr = SHCreateItemFromParsingName(targetPath.c_str(), nullptr, IID_PPV_ARGS(&psi));
+    DiagLog(L"  SHCreateItemFromParsingName -> 0x%08X (%llu ms)", (unsigned)hr, GetTickCount64() - diagTSh);
 
     if (SUCCEEDED(hr) && psi) {
         static const MetaProp props[] = {
@@ -241,16 +297,24 @@ std::vector<InfoRow> BuildRegularFileMetadataRows(const std::wstring& targetPath
             { &PKEY_Media_Year,               S_META_YEAR },
         };
 
+        ULONGLONG diagTProps = GetTickCount64();
         for (auto& p : props) {
+            ULONGLONG diagTOne = GetTickCount64();
             PROPVARIANT pv;
             PropVariantInit(&pv);
-            if (SUCCEEDED(psi->GetProperty(*p.key, &pv)) && pv.vt != VT_EMPTY) {
+            HRESULT hrProp = psi->GetProperty(*p.key, &pv);
+            ULONGLONG diagOneMs = GetTickCount64() - diagTOne;
+            if (diagOneMs >= 50) // логируем только заметно медленные, чтобы не засорять лог
+                DiagLog(L"    GetProperty(one key) -> 0x%08X (%llu ms)", (unsigned)hrProp, diagOneMs);
+            if (SUCCEEDED(hrProp) && pv.vt != VT_EMPTY) {
                 std::wstring text = FormatPropertyForDisplay(*p.key, pv);
                 if (!text.empty())
                     rows.push_back({ p.label, text });
             }
             PropVariantClear(&pv);
         }
+        DiagLog(L"  props-loop (%d keys) done (%llu ms)",
+                (int)(sizeof(props) / sizeof(props[0])), GetTickCount64() - diagTProps);
 
         // Разрешение одной строкой "ШxВ" — сначала пробуем фото-свойства, если нет — видео
         {
@@ -367,6 +431,7 @@ std::vector<InfoRow> BuildRegularFileMetadataRows(const std::wstring& targetPath
     }
 
     if (needUninit) CoUninitialize();
+    DiagLog(L"END target=%ls total=%llu ms", targetPath.c_str(), GetTickCount64() - diagT0);
     return rows;
 }
 
@@ -382,6 +447,7 @@ std::vector<InfoRow> BuildRegularFileMetadataRows(const std::wstring& targetPath
 // путь к файлу).
 ShortcutInfo ResolveShortcut(const std::wstring& lnkPath)
 {
+    ScopeDiag _diag(L"ResolveShortcut", lnkPath);
     ShortcutInfo info;
     if (GetExtLower(lnkPath) != L"lnk") return info;
     info.isShortcut = true;
@@ -467,6 +533,7 @@ ShortcutInfo ResolveShortcut(const std::wstring& lnkPath)
 
 std::vector<InfoRow> BuildFileMetadataRows(const std::wstring& targetPath)
 {
+    ScopeDiag _diag(L"BuildFileMetadataRows", targetPath);
     ShortcutInfo sc = ResolveShortcut(targetPath);
     if (!sc.isShortcut)
         return BuildRegularFileMetadataRows(targetPath);
@@ -508,6 +575,8 @@ std::vector<InfoRow> BuildFileMetadataRows(const std::wstring& targetPath)
 
 void Cmd_ShowMetadata(HWND owner, const SelectionInfo& sel)
 {
+    DiagLog(L"Cmd_ShowMetadata ENTER, %u path(s), allFolders=%d allFiles=%d",
+            (unsigned)sel.paths.size(), (int)sel.allFolders, (int)sel.allFiles);
     if (sel.paths.empty()) {
         MessageBoxW(owner, S_MSG_NOTHING_SELECTED, S_MSG_TITLE, MB_OK | MB_ICONINFORMATION);
         return;
