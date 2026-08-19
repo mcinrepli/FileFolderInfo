@@ -282,10 +282,15 @@ IFACEMETHODIMP CShellExt::GetCommandString(UINT_PTR idCmd, UINT uType, UINT* /*p
         return S_OK;
     }
     if (uType == GCS_VERBW) {
-        wchar_t buf[32];
-        StringCchPrintfW(buf, 32, L"ffi_cmd_%u", (unsigned)idCmd);
-        StringCchCopyW((LPWSTR)pszName, cchMax, buf);
-        return S_OK;
+        // Раньше публиковали "ffi_cmd_N" здесь. По диагностике на реальной системе:
+        // когда Проводник вызывает команду ЧИСЛОВЫМ ID — стабильно 100% случаев;
+        // когда строковым verb-ом — иногда попадает не в тот инстанс расширения
+        // (Проводник создаёт отдельный инстанс на РАЗРЕШЁННУЮ цель ярлыка для
+        // подмешивания её verb-ов в меню, и оба инстанса отвечают на один и тот
+        // же "ffi_cmd_N" одинаково — отсюда неоднозначность). Не отдаём строковый
+        // verb вообще, чтобы Проводник не имел повода его использовать; сам разбор
+        // строкового verb-а в InvokeCommand оставлен как подстраховка.
+        return E_NOTIMPL;
     }
     return E_NOTIMPL;
 }
