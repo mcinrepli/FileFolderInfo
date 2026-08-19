@@ -68,6 +68,21 @@ IFACEMETHODIMP CShellExt::QueryContextMenu(HMENU hMenu, UINT indexMenu, UINT idC
     if (uFlags & CMF_DEFAULTONLY)
         return MAKE_HRESULT(SEVERITY_SUCCESS, FACILITY_NULL, 0);
 
+    if (uFlags & CMF_VERBSONLY) {
+        // Проводник вызывает QueryContextMenu с этим флагом отдельно, на
+        // РАЗРЕШЁННОЙ цели ярлыка — чтобы подмешать её verb-ы в меню самого
+        // .lnk. Из диагностики: наше расширение регистрируется на все файлы,
+        // поэтому получает такой запрос на цель КАЖДОГО ярлыка, и именно этот
+        // второй, "чужой" для пользователя инстанс иногда (по последним логам —
+        // почти всегда) получает клик вместо инстанса самого .lnk — отсюда вся
+        // нестабильность на файловых ярлыках. Просто не участвуем в этом
+        // проходе: тогда наш пункт меню может прийти только от инстанса,
+        // отвечающего за реально выбранный элемент.
+        DiagLog(L"QueryContextMenu this=%X SKIP (CMF_VERBSONLY — проход по цели ярлыка)",
+                (unsigned)(UINT_PTR)this);
+        return MAKE_HRESULT(SEVERITY_SUCCESS, FACILITY_NULL, 0);
+    }
+
     if ((idCmdLast - idCmdFirst) < CMD_COUNT + 4)
         return MAKE_HRESULT(SEVERITY_SUCCESS, FACILITY_NULL, 0);
 
