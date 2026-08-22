@@ -113,6 +113,7 @@ struct ShortcutInfo {
     bool resolved = false;          // сам файл .lnk прочитан и разобран как ShellLink
     bool hasLocalPath = false;      // нашли LocalBasePath (обычный файл/папка на диске)
     bool isVirtualLocation = false; // есть только IDList, LinkInfo нет — системное расположение (Панель управления и т.п.)
+    bool isMsiAdvertisedUnresolved = false; // MSI advertised-ярлык (HasDarwinID), компонент не установлен локально
     bool targetExists = false;
     bool targetIsFolder = false;
     std::wstring targetPath;

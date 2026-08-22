@@ -6,6 +6,7 @@
 #include <propkey.h>
 #include <propvarutil.h>
 #include <propsys.h>
+#include <msi.h>
 #include <map>
 #include <algorithm>
 #include <cstdarg>
@@ -519,7 +520,24 @@ ShortcutInfo ResolveShortcut(const std::wstring& lnkPath)
         if (liSize == 0 || liStart + liSize < liStart) return info; // защита от переполнения
         pos = liStart + liSize;
     } else if (hasIDList) {
-        info.isVirtualLocation = true; // только IDList — системное расположение (Панель управления и т.п.)
+        bool msiResolved = false;
+        if (linkFlags & 0x1000) { // HasDarwinID — MSI advertised-ярлык (setup capture, и т.п.)
+            wchar_t product[40] = {0}, feature[40] = {0}, component[40] = {0};
+            if (MsiGetShortcutTargetW(lnkPath.c_str(), product, feature, component) == ERROR_SUCCESS) {
+                wchar_t pathBuf[MAX_PATH] = {0};
+                DWORD pathLen = MAX_PATH;
+                INSTALLSTATE state = MsiGetComponentPathW(product, component, pathBuf, &pathLen);
+                if ((state == INSTALLSTATE_LOCAL || state == INSTALLSTATE_SOURCE) && pathBuf[0]) {
+                    info.targetPath = pathBuf;
+                    info.hasLocalPath = true;
+                    msiResolved = true;
+                } else {
+                    info.isMsiAdvertisedUnresolved = true; // компонент не установлен локально
+                }
+            }
+        }
+        if (!msiResolved && !info.isMsiAdvertisedUnresolved)
+            info.isVirtualLocation = true; // только IDList, не MSI — настоящее системное расположение (Панель управления и т.п.)
     }
 
     if (info.hasLocalPath) {
@@ -535,9 +553,9 @@ std::vector<InfoRow> BuildFileMetadataRows(const std::wstring& targetPath)
 {
     ScopeDiag _diag(L"BuildFileMetadataRows", targetPath);
     ShortcutInfo sc = ResolveShortcut(targetPath);
-    DiagLog(L"  sc: isShortcut=%d resolved=%d hasLocalPath=%d isVirtual=%d targetExists=%d targetIsFolder=%d targetPath=%ls",
+    DiagLog(L"  sc: isShortcut=%d resolved=%d hasLocalPath=%d isVirtual=%d msiUnresolved=%d targetExists=%d targetIsFolder=%d targetPath=%ls",
             (int)sc.isShortcut, (int)sc.resolved, (int)sc.hasLocalPath, (int)sc.isVirtualLocation,
-            (int)sc.targetExists, (int)sc.targetIsFolder, sc.targetPath.c_str());
+            (int)sc.isMsiAdvertisedUnresolved, (int)sc.targetExists, (int)sc.targetIsFolder, sc.targetPath.c_str());
     if (!sc.isShortcut)
         return BuildRegularFileMetadataRows(targetPath);
 
@@ -550,6 +568,10 @@ std::vector<InfoRow> BuildFileMetadataRows(const std::wstring& targetPath)
 
     if (sc.isVirtualLocation) {
         rows.push_back({ S_META_SHORTCUT_STATUS, S_SHORTCUT_VIRTUAL });
+        return rows;
+    }
+    if (sc.isMsiAdvertisedUnresolved) {
+        rows.push_back({ S_META_SHORTCUT_STATUS, S_SHORTCUT_MSI_UNRESOLVED });
         return rows;
     }
 
