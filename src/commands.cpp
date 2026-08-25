@@ -230,8 +230,8 @@ void DoRenameOperation(HWND owner, const SelectionInfo& sel, int mode)
                 if (!GetFileMTimeLocal(fullPath, &st)) { skipped++; continue; }
                 newName = info.base + L" " + FormatFilenameDate(st) + info.ext;
             }
-        } else {
-            // mode == 2: дописываем дату к текущему имени как есть, суффикс копии не трогаем
+        } else if (mode == 2) {
+            // дописываем дату изменения файла к текущему имени как есть, суффикс копии не трогаем
             SYSTEMTIME st;
             if (!GetFileMTimeLocal(fullPath, &st)) { skipped++; continue; }
 
@@ -243,6 +243,20 @@ void DoRenameOperation(HWND owner, const SelectionInfo& sel, int mode)
                     base2 = base2.substr(0, dot);
                 }
             }
+            newName = base2 + L" " + FormatFilenameDate(st) + ext2;
+        } else {
+            // mode == 3: дописываем дату СЪЁМКИ из EXIF — только jpg/jpeg, только файлы
+            if (isFolder) { skipped++; continue; }
+            size_t dot = name.find_last_of(L'.');
+            std::wstring ext2 = (dot != std::wstring::npos && dot > 0) ? name.substr(dot) : L"";
+            std::wstring extLower = ext2;
+            for (auto& c : extLower) c = (wchar_t)towlower(c);
+            if (extLower != L".jpg" && extLower != L".jpeg") { skipped++; continue; }
+
+            SYSTEMTIME st;
+            if (!FindExifDateTaken(fullPath, &st)) { skipped++; continue; } // нет тега — не трогаем файл
+
+            std::wstring base2 = (dot != std::wstring::npos && dot > 0) ? name.substr(0, dot) : name;
             newName = base2 + L" " + FormatFilenameDate(st) + ext2;
         }
 
@@ -273,6 +287,7 @@ void DoRenameOperation(HWND owner, const SelectionInfo& sel, int mode)
 void Cmd_RenameCopyNumber(HWND owner, const SelectionInfo& sel) { DoRenameOperation(owner, sel, 0); }
 void Cmd_RenameCopyDate(HWND owner, const SelectionInfo& sel)   { DoRenameOperation(owner, sel, 1); }
 void Cmd_AppendDate(HWND owner, const SelectionInfo& sel)       { DoRenameOperation(owner, sel, 2); }
+void Cmd_AppendExifDate(HWND owner, const SelectionInfo& sel)   { DoRenameOperation(owner, sel, 3); }
 
 // ============================================================ клонирование (копия рядом)
 

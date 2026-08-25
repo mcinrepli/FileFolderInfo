@@ -191,6 +191,8 @@ IFACEMETHODIMP CShellExt::QueryContextMenu(HMENU hMenu, UINT indexMenu, UINT idC
     addItemTo(hSub, CMD_RENAME_COPY_NUMBER, S_ITEM_RENAME_NUMBER);
     addItemTo(hSub, CMD_RENAME_COPY_DATE, S_ITEM_RENAME_DATE);
     addItemTo(hSub, CMD_APPEND_DATE, S_ITEM_APPEND_DATE);
+    if (allRotatable)
+        addItemTo(hSub, CMD_APPEND_EXIF_DATE, S_ITEM_APPEND_EXIF_DATE);
     addSepTo(hSub);
     addPopupTo(hSub, CMD_COUNT + 1, S_ITEM_CLONE_SUBMENU, hCloneSub);
     if (hRotateSub)
@@ -268,6 +270,7 @@ IFACEMETHODIMP CShellExt::InvokeCommand(LPCMINVOKECOMMANDINFO pici)
     case CMD_RENAME_COPY_NUMBER: Cmd_RenameCopyNumber(hwnd, sel); break;
     case CMD_RENAME_COPY_DATE:   Cmd_RenameCopyDate(hwnd, sel); break;
     case CMD_APPEND_DATE:        Cmd_AppendDate(hwnd, sel); break;
+    case CMD_APPEND_EXIF_DATE:   Cmd_AppendExifDate(hwnd, sel); break;
     case CMD_CLONE_DATE_MODIFIED: Cmd_CloneDateModified(hwnd, sel); break;
     case CMD_CLONE_DATE_CREATED:  Cmd_CloneDateCreated(hwnd, sel); break;
     case CMD_CLONE_NUMBERED:      Cmd_CloneNumbered(hwnd, sel); break;
@@ -285,7 +288,7 @@ IFACEMETHODIMP CShellExt::GetCommandString(UINT_PTR idCmd, UINT uType, UINT* /*p
         S_HELP_DATE, S_HELP_DATE, S_HELP_DATE,
         S_HELP_TREE_PATHS, S_HELP_TREE_NAMES,
         S_HELP_SHOW_SIZE, S_HELP_METADATA, S_HELP_DEPENDENCIES,
-        S_HELP_RENAME_NUMBER, S_HELP_RENAME_DATE, S_HELP_APPEND_DATE,
+        S_HELP_RENAME_NUMBER, S_HELP_RENAME_DATE, S_HELP_APPEND_DATE, S_HELP_APPEND_EXIF_DATE,
         S_HELP_CLONE_DATE_MODIFIED, S_HELP_CLONE_DATE_CREATED, S_HELP_CLONE_NUMBERED,
         S_HELP_ROTATE_LEFT, S_HELP_ROTATE_RIGHT
     };

@@ -39,6 +39,7 @@ enum CommandId : UINT {
     CMD_RENAME_COPY_NUMBER,
     CMD_RENAME_COPY_DATE,
     CMD_APPEND_DATE,
+    CMD_APPEND_EXIF_DATE,
     CMD_CLONE_DATE_MODIFIED,
     CMD_CLONE_DATE_CREATED,
     CMD_CLONE_NUMBERED,
@@ -94,6 +95,7 @@ void Cmd_DateAccessed(HWND owner, const SelectionInfo& sel);
 void Cmd_RenameCopyNumber(HWND owner, const SelectionInfo& sel);
 void Cmd_RenameCopyDate(HWND owner, const SelectionInfo& sel);
 void Cmd_AppendDate(HWND owner, const SelectionInfo& sel);
+void Cmd_AppendExifDate(HWND owner, const SelectionInfo& sel);
 void Cmd_CloneDateModified(HWND owner, const SelectionInfo& sel);
 void Cmd_CloneDateCreated(HWND owner, const SelectionInfo& sel);
 void Cmd_CloneNumbered(HWND owner, const SelectionInfo& sel);
@@ -106,6 +108,9 @@ void Cmd_RotateRight(HWND owner, const SelectionInfo& sel);
 
 // ---- peinfo.cpp: разбор PE-заголовка (exe/dll) ----
 bool GetPeArchAndDotNetInfo(const std::wstring& path, std::wstring* archText, std::wstring* dotNetVersionText);
+
+// ---- rotate.cpp: EXIF (JPEG) ----
+bool FindExifDateTaken(const std::wstring& path, SYSTEMTIME* outLocal); // DateTimeOriginal/DateTimeDigitized/DateTime
 
 // ---- metadata.cpp: разбор ярлыков (.lnk) — ручной разбор по MS-SHLLINK, без COM/IShellLinkW ----
 struct ShortcutInfo {

@@ -198,5 +198,147 @@ void DoRotateOperation(HWND owner, const SelectionInfo& sel, bool rotateRight)
 
 } // namespace
 
+// Дата съёмки: EXIF DateTimeOriginal (0x9003) или DateTimeDigitized (0x9004)
+// из EXIF SubIFD (на которую указывает тег 0x8769 в IFD0); если ни того ни
+// другого нет — DateTime (0x0132) из самого IFD0. Формат тега — ASCII
+// "YYYY:MM:DD HH:MM:SS" (ровно 19 значащих байт + завершающий 0). Часовой
+// пояс EXIF не хранит — трактуем как локальное время съёмки, как и камеры.
+bool FindExifDateTaken(const std::wstring& path, SYSTEMTIME* outLocal)
+{
+    HANDLE hFile = CreateFileW(path.c_str(), GENERIC_READ,
+                                FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (hFile == INVALID_HANDLE_VALUE) return false;
+
+    bool found = false;
+    wchar_t d[20] = {0};
+
+    BYTE soi[2];
+    DWORD read = 0;
+    SetFilePointer(hFile, 0, nullptr, FILE_BEGIN);
+    if (!ReadFile(hFile, soi, 2, &read, nullptr) || read != 2 || soi[0] != 0xFF || soi[1] != 0xD8) {
+        CloseHandle(hFile);
+        return false;
+    }
+
+    DWORD pos = 2;
+    for (int guard = 0; guard < 200 && !found; guard++) {
+        BYTE marker[2];
+        SetFilePointer(hFile, pos, nullptr, FILE_BEGIN);
+        if (!ReadFile(hFile, marker, 2, &read, nullptr) || read != 2) break;
+        if (marker[0] != 0xFF) break;
+        if (marker[1] == 0xD8 || marker[1] == 0xD9) break;
+        if (marker[1] == 0xDA) break;
+        if (marker[1] >= 0xD0 && marker[1] <= 0xD7) { pos += 2; continue; }
+
+        BYTE lenBuf[2];
+        if (!ReadFile(hFile, lenBuf, 2, &read, nullptr) || read != 2) break;
+        WORD segLen = (WORD)((lenBuf[0] << 8) | lenBuf[1]);
+        if (segLen < 2) break;
+        DWORD payloadStart = pos + 4;
+
+        if (marker[1] == 0xE1 && segLen >= 8) {
+            BYTE sig[6];
+            if (ReadFile(hFile, sig, 6, &read, nullptr) && read == 6 && memcmp(sig, "Exif\0\0", 6) == 0) {
+                DWORD tiffStart = payloadStart + 6;
+                BYTE bo[4];
+                SetFilePointer(hFile, tiffStart, nullptr, FILE_BEGIN);
+                if (ReadFile(hFile, bo, 4, &read, nullptr) && read == 4) {
+                    bool bigEndian = false, okBo = true;
+                    if (bo[0] == 'I' && bo[1] == 'I') bigEndian = false;
+                    else if (bo[0] == 'M' && bo[1] == 'M') bigEndian = true;
+                    else okBo = false;
+
+                    if (okBo) {
+                        auto rd16 = [&](const BYTE* p) -> WORD {
+                            return bigEndian ? (WORD)((p[0] << 8) | p[1]) : (WORD)((p[1] << 8) | p[0]);
+                        };
+                        auto rd32 = [&](const BYTE* p) -> DWORD {
+                            return bigEndian
+                                ? ((DWORD)p[0] << 24) | ((DWORD)p[1] << 16) | ((DWORD)p[2] << 8) | p[3]
+                                : ((DWORD)p[3] << 24) | ((DWORD)p[2] << 16) | ((DWORD)p[1] << 8) | p[0];
+                        };
+
+                        if (rd16(bo + 2) == 0x002A) {
+                            BYTE ifdOffBuf[4];
+                            SetFilePointer(hFile, tiffStart + 4, nullptr, FILE_BEGIN);
+                            if (ReadFile(hFile, ifdOffBuf, 4, &read, nullptr) && read == 4) {
+                                DWORD ifd0Off = rd32(ifdOffBuf);
+                                if (ifd0Off != 0 && ifd0Off <= 0x100000) {
+                                    DWORD ifdToScan[2] = { tiffStart + ifd0Off, 0 };
+                                    int ifdCount = 1;
+
+                                    for (int ifdIdx = 0; ifdIdx < ifdCount && !found; ifdIdx++) {
+                                        DWORD ifdPos = ifdToScan[ifdIdx];
+                                        BYTE cntBuf[2];
+                                        SetFilePointer(hFile, ifdPos, nullptr, FILE_BEGIN);
+                                        if (!ReadFile(hFile, cntBuf, 2, &read, nullptr) || read != 2) continue;
+                                        WORD entryCount = rd16(cntBuf);
+                                        if (entryCount > 200) continue;
+
+                                        for (WORD i = 0; i < entryCount; i++) {
+                                            DWORD entryPos = ifdPos + 2 + (DWORD)i * 12;
+                                            BYTE entry[12];
+                                            SetFilePointer(hFile, entryPos, nullptr, FILE_BEGIN);
+                                            if (!ReadFile(hFile, entry, 12, &read, nullptr) || read != 12) continue;
+                                            WORD tag = rd16(entry);
+                                            WORD type = rd16(entry + 2);
+                                            DWORD count = rd32(entry + 4);
+
+                                            if (ifdIdx == 0 && tag == 0x8769 && ifdCount < 2) {
+                                                DWORD exifIfdOff = rd32(entry + 8);
+                                                if (exifIfdOff != 0 && exifIfdOff <= 0x100000) {
+                                                    ifdToScan[1] = tiffStart + exifIfdOff;
+                                                    ifdCount = 2;
+                                                }
+                                            }
+
+                                            bool wantedTag = (tag == 0x9003 || tag == 0x9004 || (ifdIdx == 0 && tag == 0x0132));
+                                            if (wantedTag && type == 2 && count >= 19 && count <= 20) {
+                                                DWORD strOff = (count <= 4) ? (entryPos + 8) : (tiffStart + rd32(entry + 8));
+                                                BYTE strBuf[19];
+                                                SetFilePointer(hFile, strOff, nullptr, FILE_BEGIN);
+                                                if (ReadFile(hFile, strBuf, 19, &read, nullptr) && read == 19) {
+                                                    for (int k = 0; k < 19; k++) d[k] = (wchar_t)strBuf[k];
+                                                    found = true;
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        pos += 2 + segLen;
+    }
+
+    CloseHandle(hFile);
+    if (!found) return false;
+
+    bool validFormat = true;
+    for (int i = 0; i < 19 && validFormat; i++) {
+        if (i == 4 || i == 7 || i == 13 || i == 16) { if (d[i] != L':') validFormat = false; }
+        else if (i == 10) { if (d[i] != L' ') validFormat = false; }
+        else { if (d[i] < L'0' || d[i] > L'9') validFormat = false; }
+    }
+    if (!validFormat) return false;
+
+    SYSTEMTIME st = {0};
+    st.wYear   = (WORD)((d[0]-L'0')*1000 + (d[1]-L'0')*100 + (d[2]-L'0')*10 + (d[3]-L'0'));
+    st.wMonth  = (WORD)((d[5]-L'0')*10 + (d[6]-L'0'));
+    st.wDay    = (WORD)((d[8]-L'0')*10 + (d[9]-L'0'));
+    st.wHour   = (WORD)((d[11]-L'0')*10 + (d[12]-L'0'));
+    st.wMinute = (WORD)((d[14]-L'0')*10 + (d[15]-L'0'));
+    st.wSecond = (WORD)((d[17]-L'0')*10 + (d[18]-L'0'));
+    if (st.wYear < 1980 || st.wYear > 2100 || st.wMonth < 1 || st.wMonth > 12 || st.wDay < 1 || st.wDay > 31)
+        return false;
+
+    *outLocal = st;
+    return true;
+}
+
 void Cmd_RotateLeft(HWND owner, const SelectionInfo& sel) { DoRotateOperation(owner, sel, false); }
 void Cmd_RotateRight(HWND owner, const SelectionInfo& sel) { DoRotateOperation(owner, sel, true); }
