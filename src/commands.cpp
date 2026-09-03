@@ -49,6 +49,13 @@ void NotifyRenamed(const std::wstring& oldFull)
     SHChangeNotify(SHCNE_RENAMEITEM, SHCNF_PATHW, oldFull.c_str(), nullptr);
 }
 
+void NotifyAttributesChanged(const std::wstring& full)
+{
+    // Путь не меняется, меняются только атрибуты (даты) — правильное событие,
+    // не RENAMEITEM (там путь обязателен другой).
+    SHChangeNotify(SHCNE_ATTRIBUTES, SHCNF_PATHW, full.c_str(), nullptr);
+}
+
 } // namespace
 
 // ============================================================ форматы дат (пункты 4,5,6)
@@ -288,6 +295,46 @@ void Cmd_RenameCopyNumber(HWND owner, const SelectionInfo& sel) { DoRenameOperat
 void Cmd_RenameCopyDate(HWND owner, const SelectionInfo& sel)   { DoRenameOperation(owner, sel, 1); }
 void Cmd_AppendDate(HWND owner, const SelectionInfo& sel)       { DoRenameOperation(owner, sel, 2); }
 void Cmd_AppendExifDate(HWND owner, const SelectionInfo& sel)   { DoRenameOperation(owner, sel, 3); }
+
+void Cmd_FixDatesFromExif(HWND owner, const SelectionInfo& sel)
+{
+    if (sel.paths.empty() || !sel.allFiles) {
+        MessageBoxW(owner, S_MSG_NOTHING_SELECTED, S_MSG_TITLE, MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+
+    int done = 0, skipped = 0;
+    for (auto& p : sel.paths) {
+        size_t dot = p.find_last_of(L'.');
+        std::wstring ext = (dot != std::wstring::npos) ? p.substr(dot + 1) : L"";
+        for (auto& c : ext) c = (wchar_t)towlower(c);
+        if (ext != L"jpg" && ext != L"jpeg") { skipped++; continue; }
+
+        SYSTEMTIME stLocal;
+        if (!FindExifDateTaken(p, &stLocal)) { skipped++; continue; } // нет тега — не трогаем файл
+
+        FILETIME ftUtc;
+        if (!FileTimeUtcFromSystemTimeLocal(stLocal, &ftUtc)) { skipped++; continue; }
+
+        // Отдельный дескриптор только под запись атрибутов, без предварительной
+        // записи данных в этот же хендл — тот случай из lessons learned про
+        // "запись и SetFileTime на одном дескрипторе" тут не применим (мы
+        // вообще не пишем содержимое файла), но открываем всё равно чисто под
+        // FILE_WRITE_ATTRIBUTES, ничего лишнего.
+        HANDLE h = CreateFileW(p.c_str(), FILE_WRITE_ATTRIBUTES,
+                                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+        if (h == INVALID_HANDLE_VALUE) { skipped++; continue; }
+        BOOL ok = SetFileTime(h, &ftUtc, &ftUtc, &ftUtc); // создание, доступ, изменение — все три на дату съёмки
+        CloseHandle(h);
+
+        if (ok) { done++; NotifyAttributesChanged(p); } else skipped++;
+    }
+
+    wchar_t msg[256];
+    swprintf(msg, 256, S_MSG_FIXDATE_DONE_FMT, done, skipped);
+    MessageBoxW(owner, msg, S_MSG_TITLE, MB_OK | MB_ICONINFORMATION);
+}
 
 // ============================================================ клонирование (копия рядом)
 

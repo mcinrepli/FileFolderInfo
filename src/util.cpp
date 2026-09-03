@@ -168,6 +168,13 @@ void SystemTimeLocalFromFileTime(const FILETIME& ft, SYSTEMTIME* stLocal)
     FileTimeToSystemTime(&ftLocal, stLocal);
 }
 
+bool FileTimeUtcFromSystemTimeLocal(const SYSTEMTIME& stLocal, FILETIME* ftUtc)
+{
+    FILETIME ftLocal;
+    if (!SystemTimeToFileTime(&stLocal, &ftLocal)) return false; // это пока не UTC, а те же числа в виде FILETIME
+    return LocalFileTimeToFileTime(&ftLocal, ftUtc) != 0; // а вот теперь конвертация локальное -> UTC
+}
+
 // ============================================================ разбор суффикса "— копия"
 
 CopySuffixInfo ParseCopySuffix(const std::wstring& name, bool isFolder)

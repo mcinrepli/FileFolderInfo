@@ -40,6 +40,7 @@ enum CommandId : UINT {
     CMD_RENAME_COPY_DATE,
     CMD_APPEND_DATE,
     CMD_APPEND_EXIF_DATE,
+    CMD_FIX_DATES_FROM_EXIF,
     CMD_CLONE_DATE_MODIFIED,
     CMD_CLONE_DATE_CREATED,
     CMD_CLONE_NUMBERED,
@@ -66,6 +67,7 @@ std::wstring FormatFixed(double value, int decimals);                  // без
 std::wstring RussianMonthGenitive(int month1to12);
 bool GetFileTimes(const std::wstring& path, FILETIME* ftCreate, FILETIME* ftAccess, FILETIME* ftWrite);
 void SystemTimeLocalFromFileTime(const FILETIME& ft, SYSTEMTIME* stLocal);
+bool FileTimeUtcFromSystemTimeLocal(const SYSTEMTIME& stLocal, FILETIME* ftUtc);
 std::wstring FormatDateVariant(const SYSTEMTIME& st, int variant); // variant 1..5, см. commands.cpp
 
 // Разбор имени файла/папки на (базовое_имя, расширение, число повторов суффикса "— копия")
@@ -96,6 +98,7 @@ void Cmd_RenameCopyNumber(HWND owner, const SelectionInfo& sel);
 void Cmd_RenameCopyDate(HWND owner, const SelectionInfo& sel);
 void Cmd_AppendDate(HWND owner, const SelectionInfo& sel);
 void Cmd_AppendExifDate(HWND owner, const SelectionInfo& sel);
+void Cmd_FixDatesFromExif(HWND owner, const SelectionInfo& sel);
 void Cmd_CloneDateModified(HWND owner, const SelectionInfo& sel);
 void Cmd_CloneDateCreated(HWND owner, const SelectionInfo& sel);
 void Cmd_CloneNumbered(HWND owner, const SelectionInfo& sel);
