@@ -1,0 +1,206 @@
+#include <windows.h>
+#include <cstdio>
+
+// Официальные заголовки — только ради типов (ULView, ULRenderer, структуры)
+// и сигнатур для typedef'ов. Сами функции берём через GetProcAddress, не
+// линкуемся на Ultralight.lib/AppCore.lib напрямую (это .lib от MSVC/Clang,
+// с MinGW напрямую не дружат — та же история, что и с WebView2Loader).
+#include "Ultralight/CAPI.h"
+#include "AppCore/CAPI.h"
+
+// ---- сигнатуры нужных функций (минимальный набор для offscreen-рендера) ----
+typedef void          (STDAPICALLTYPE *Fn_ulEnablePlatformFontLoader)();
+typedef void           (STDAPICALLTYPE *Fn_ulEnableDefaultLogger)(ULString);
+typedef ULString      (STDAPICALLTYPE *Fn_ulCreateString)(const char*);
+typedef void           (STDAPICALLTYPE *Fn_ulDestroyString)(ULString);
+typedef ULConfig       (STDAPICALLTYPE *Fn_ulCreateConfig)();
+typedef void           (STDAPICALLTYPE *Fn_ulDestroyConfig)(ULConfig);
+typedef void           (STDAPICALLTYPE *Fn_ulConfigSetResourcePathPrefix)(ULConfig, ULString);
+typedef ULRenderer     (STDAPICALLTYPE *Fn_ulCreateRenderer)(ULConfig);
+typedef void           (STDAPICALLTYPE *Fn_ulDestroyRenderer)(ULRenderer);
+typedef ULViewConfig   (STDAPICALLTYPE *Fn_ulCreateViewConfig)();
+typedef void           (STDAPICALLTYPE *Fn_ulDestroyViewConfig)(ULViewConfig);
+typedef void           (STDAPICALLTYPE *Fn_ulViewConfigSetIsAccelerated)(ULViewConfig, bool);
+typedef ULView         (STDAPICALLTYPE *Fn_ulCreateView)(ULRenderer, unsigned int, unsigned int, ULViewConfig, ULSession);
+typedef void           (STDAPICALLTYPE *Fn_ulDestroyView)(ULView);
+typedef void           (STDAPICALLTYPE *Fn_ulViewLoadHTML)(ULView, ULString);
+typedef void           (STDAPICALLTYPE *Fn_ulUpdate)(ULRenderer);
+typedef void           (STDAPICALLTYPE *Fn_ulRender)(ULRenderer);
+typedef ULSurface      (STDAPICALLTYPE *Fn_ulViewGetSurface)(ULView);
+typedef ULBitmap       (STDAPICALLTYPE *Fn_ulBitmapSurfaceGetBitmap)(ULSurface);
+typedef void*          (STDAPICALLTYPE *Fn_ulBitmapLockPixels)(ULBitmap);
+typedef void           (STDAPICALLTYPE *Fn_ulBitmapUnlockPixels)(ULBitmap);
+typedef unsigned int   (STDAPICALLTYPE *Fn_ulBitmapGetWidth)(ULBitmap);
+typedef unsigned int   (STDAPICALLTYPE *Fn_ulBitmapGetHeight)(ULBitmap);
+typedef unsigned int   (STDAPICALLTYPE *Fn_ulBitmapGetRowBytes)(ULBitmap);
+
+struct UL {
+    Fn_ulEnablePlatformFontLoader        EnablePlatformFontLoader;
+    Fn_ulEnableDefaultLogger             EnableDefaultLogger;
+    Fn_ulCreateString                    CreateString;
+    Fn_ulDestroyString                   DestroyString;
+    Fn_ulCreateConfig                    CreateConfig;
+    Fn_ulDestroyConfig                   DestroyConfig;
+    Fn_ulConfigSetResourcePathPrefix     ConfigSetResourcePathPrefix;
+    Fn_ulCreateRenderer                  CreateRenderer;
+    Fn_ulDestroyRenderer                 DestroyRenderer;
+    Fn_ulCreateViewConfig                CreateViewConfig;
+    Fn_ulDestroyViewConfig               DestroyViewConfig;
+    Fn_ulViewConfigSetIsAccelerated      ViewConfigSetIsAccelerated;
+    Fn_ulCreateView                      CreateView;
+    Fn_ulDestroyView                     DestroyView;
+    Fn_ulViewLoadHTML                    ViewLoadHTML;
+    Fn_ulUpdate                          Update;
+    Fn_ulRender                          Render;
+    Fn_ulViewGetSurface                  ViewGetSurface;
+    Fn_ulBitmapSurfaceGetBitmap          BitmapSurfaceGetBitmap;
+    Fn_ulBitmapLockPixels                BitmapLockPixels;
+    Fn_ulBitmapUnlockPixels              BitmapUnlockPixels;
+    Fn_ulBitmapGetWidth                  BitmapGetWidth;
+    Fn_ulBitmapGetHeight                 BitmapGetHeight;
+    Fn_ulBitmapGetRowBytes               BitmapGetRowBytes;
+} ul;
+
+#define LOAD(mod, name) \
+    do { ul.name = (Fn_ul##name)GetProcAddress(mod, "ul" #name); \
+         if (!ul.name) { wchar_t b[128]; swprintf(b, 128, L"GetProcAddress не нашёл ul%hs", #name); \
+                          MessageBoxW(nullptr, b, L"probe", MB_OK | MB_ICONERROR); ExitProcess(1); } \
+    } while (0)
+
+static ULRenderer g_renderer = nullptr;
+static ULView g_view = nullptr;
+static HWND g_hwnd = nullptr;
+
+void BlitViewToWindow()
+{
+    ULSurface surface = ul.ViewGetSurface(g_view);
+    ULBitmap bitmap = ul.BitmapSurfaceGetBitmap(surface);
+    unsigned int w = ul.BitmapGetWidth(bitmap);
+    unsigned int h = ul.BitmapGetHeight(bitmap);
+    unsigned int stride = ul.BitmapGetRowBytes(bitmap);
+    void* pixels = ul.BitmapLockPixels(bitmap);
+
+    BITMAPINFO bmi = {};
+    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bmi.bmiHeader.biWidth = (LONG)w;
+    bmi.bmiHeader.biHeight = -(LONG)h; // отрицательная высота — top-down DIB, как и у Ultralight
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
+
+    HDC hdc = GetDC(g_hwnd);
+    StretchDIBits(hdc, 0, 0, (int)w, (int)h, 0, 0, (int)w, (int)h,
+                  pixels, &bmi, DIB_RGB_COLORS, SRCCOPY);
+    ReleaseDC(g_hwnd, hdc);
+
+    ul.BitmapUnlockPixels(bitmap);
+    (void)stride;
+}
+
+LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+{
+    switch (msg) {
+    case WM_TIMER:
+        ul.Update(g_renderer);
+        ul.Render(g_renderer);
+        BlitViewToWindow();
+        return 0;
+    case WM_PAINT: {
+        PAINTSTRUCT ps;
+        BeginPaint(hwnd, &ps);
+        BlitViewToWindow();
+        EndPaint(hwnd, &ps);
+        return 0;
+    }
+    case WM_DESTROY:
+        PostQuitMessage(0);
+        return 0;
+    }
+    return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int)
+{
+    // Загружаем обе DLL из папки, где лежит сама проба (SetDllDirectory не
+    // нужен — Windows и так первой проверяет каталог exe).
+    HMODULE hUltralight = LoadLibraryW(L"Ultralight.dll");
+    HMODULE hAppCore = LoadLibraryW(L"AppCore.dll");
+    if (!hUltralight || !hAppCore) {
+        MessageBoxW(nullptr, L"Не найдены Ultralight.dll / AppCore.dll рядом с probe.exe", L"probe", MB_OK | MB_ICONERROR);
+        return 1;
+    }
+
+    LOAD(hAppCore, EnablePlatformFontLoader);
+    LOAD(hAppCore, EnableDefaultLogger);
+    LOAD(hUltralight, CreateString);
+    LOAD(hUltralight, DestroyString);
+    LOAD(hUltralight, CreateConfig);
+    LOAD(hUltralight, DestroyConfig);
+    LOAD(hUltralight, ConfigSetResourcePathPrefix);
+    LOAD(hUltralight, CreateRenderer);
+    LOAD(hUltralight, DestroyRenderer);
+    LOAD(hUltralight, CreateViewConfig);
+    LOAD(hUltralight, DestroyViewConfig);
+    LOAD(hUltralight, ViewConfigSetIsAccelerated);
+    LOAD(hUltralight, CreateView);
+    LOAD(hUltralight, DestroyView);
+    LOAD(hUltralight, ViewLoadHTML);
+    LOAD(hUltralight, Update);
+    LOAD(hUltralight, Render);
+    LOAD(hUltralight, ViewGetSurface);
+    LOAD(hUltralight, BitmapSurfaceGetBitmap);
+    LOAD(hUltralight, BitmapLockPixels);
+    LOAD(hUltralight, BitmapUnlockPixels);
+    LOAD(hUltralight, BitmapGetWidth);
+    LOAD(hUltralight, BitmapGetHeight);
+    LOAD(hUltralight, BitmapGetRowBytes);
+
+    ul.EnablePlatformFontLoader();
+
+    ULString logPath = ul.CreateString("./ultralight_probe.log");
+    ul.EnableDefaultLogger(logPath);
+    ul.DestroyString(logPath);
+
+    ULConfig config = ul.CreateConfig();
+    ULString resPath = ul.CreateString("./resources/");
+    ul.ConfigSetResourcePathPrefix(config, resPath);
+    ul.DestroyString(resPath);
+
+    g_renderer = ul.CreateRenderer(config);
+    ul.DestroyConfig(config);
+
+    ULViewConfig vc = ul.CreateViewConfig();
+    ul.ViewConfigSetIsAccelerated(vc, false); // CPU-рендер — без DirectX
+    g_view = ul.CreateView(g_renderer, 800, 600, vc, nullptr);
+    ul.DestroyViewConfig(vc);
+
+    ULString html = ul.CreateString(
+        "<html><body style='font-family:sans-serif;background:#eef'>"
+        "<h1>Ultralight embed OK</h1><p>CPU-\u0440\u0435\u043D\u0434\u0435\u0440, \u0431\u0435\u0437 \u043E\u0442\u0434\u0435\u043B\u044C\u043D\u043E\u0433\u043E \u0440\u0430\u043D\u0442\u0430\u0439\u043C\u0430.</p>"
+        "</body></html>");
+    ul.ViewLoadHTML(g_view, html);
+    ul.DestroyString(html);
+
+    WNDCLASSW wc = {};
+    wc.lpfnWndProc = WndProc;
+    wc.hInstance = hInst;
+    wc.lpszClassName = L"UltralightProbeWnd";
+    wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    RegisterClassW(&wc);
+
+    g_hwnd = CreateWindowW(L"UltralightProbeWnd", L"Ultralight probe",
+                           WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 820, 640,
+                           nullptr, nullptr, hInst, nullptr);
+    ShowWindow(g_hwnd, SW_SHOW);
+    SetTimer(g_hwnd, 1, 16, nullptr); // ~60 fps апдейт/рендер
+
+    MSG msg;
+    while (GetMessageW(&msg, nullptr, 0, 0)) {
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
+    }
+
+    ul.DestroyView(g_view);
+    ul.DestroyRenderer(g_renderer);
+    return 0;
+}
