@@ -10,6 +10,7 @@
 
 // ---- сигнатуры нужных функций (минимальный набор для offscreen-рендера) ----
 typedef void          (STDAPICALLTYPE *Fn_ulEnablePlatformFontLoader)();
+typedef void          (STDAPICALLTYPE *Fn_ulEnablePlatformFileSystem)(ULString);
 typedef void           (STDAPICALLTYPE *Fn_ulEnableDefaultLogger)(ULString);
 typedef ULString      (STDAPICALLTYPE *Fn_ulCreateString)(const char*);
 typedef void           (STDAPICALLTYPE *Fn_ulDestroyString)(ULString);
@@ -36,6 +37,7 @@ typedef unsigned int   (STDAPICALLTYPE *Fn_ulBitmapGetRowBytes)(ULBitmap);
 
 struct UL {
     Fn_ulEnablePlatformFontLoader        EnablePlatformFontLoader;
+    Fn_ulEnablePlatformFileSystem        EnablePlatformFileSystem;
     Fn_ulEnableDefaultLogger             EnableDefaultLogger;
     Fn_ulCreateString                    CreateString;
     Fn_ulDestroyString                   DestroyString;
@@ -131,6 +133,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int)
     }
 
     LOAD(hAppCore, EnablePlatformFontLoader);
+    LOAD(hAppCore, EnablePlatformFileSystem);
     LOAD(hAppCore, EnableDefaultLogger);
     LOAD(hUltralight, CreateString);
     LOAD(hUltralight, DestroyString);
@@ -156,6 +159,10 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int)
     LOAD(hUltralight, BitmapGetRowBytes);
 
     ul.EnablePlatformFontLoader();
+
+    ULString baseDir = ul.CreateString(".");
+    ul.EnablePlatformFileSystem(baseDir);
+    ul.DestroyString(baseDir);
 
     ULString logPath = ul.CreateString("./ultralight_probe.log");
     ul.EnableDefaultLogger(logPath);
