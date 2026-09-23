@@ -340,5 +340,162 @@ bool FindExifDateTaken(const std::wstring& path, SYSTEMTIME* outLocal)
     return true;
 }
 
+// Координаты съёмки: EXIF GPSLatitude/GPSLongitude (теги 0x0002/0x0004,
+// RATIONAL[3] — градусы,минуты,секунды) + GPSLatitudeRef/GPSLongitudeRef
+// (0x0001/0x0003, 'N'/'S'/'E'/'W') из отдельного GPS IFD (на него указывает
+// тег 0x8825 в IFD0). Возвращает десятичные градусы (широта: +N/-S,
+// долгота: +E/-W).
+bool FindExifGPS(const std::wstring& path, double* outLat, double* outLon)
+{
+    HANDLE hFile = CreateFileW(path.c_str(), GENERIC_READ,
+                                FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (hFile == INVALID_HANDLE_VALUE) return false;
+
+    bool foundLat = false, foundLon = false;
+    double lat = 0, lon = 0;
+    char latRef = 0, lonRef = 0;
+
+    BYTE soi[2];
+    DWORD read = 0;
+    SetFilePointer(hFile, 0, nullptr, FILE_BEGIN);
+    if (!ReadFile(hFile, soi, 2, &read, nullptr) || read != 2 || soi[0] != 0xFF || soi[1] != 0xD8) {
+        CloseHandle(hFile);
+        return false;
+    }
+
+    DWORD pos = 2;
+    bool doneScanning = false;
+    for (int guard = 0; guard < 200 && !doneScanning; guard++) {
+        BYTE marker[2];
+        SetFilePointer(hFile, pos, nullptr, FILE_BEGIN);
+        if (!ReadFile(hFile, marker, 2, &read, nullptr) || read != 2) break;
+        if (marker[0] != 0xFF) break;
+        if (marker[1] == 0xD8 || marker[1] == 0xD9) break;
+        if (marker[1] == 0xDA) break;
+        if (marker[1] >= 0xD0 && marker[1] <= 0xD7) { pos += 2; continue; }
+
+        BYTE lenBuf[2];
+        if (!ReadFile(hFile, lenBuf, 2, &read, nullptr) || read != 2) break;
+        WORD segLen = (WORD)((lenBuf[0] << 8) | lenBuf[1]);
+        if (segLen < 2) break;
+        DWORD payloadStart = pos + 4;
+
+        if (marker[1] == 0xE1 && segLen >= 8) {
+            BYTE sig[6];
+            if (ReadFile(hFile, sig, 6, &read, nullptr) && read == 6 && memcmp(sig, "Exif\0\0", 6) == 0) {
+                DWORD tiffStart = payloadStart + 6;
+                BYTE bo[4];
+                SetFilePointer(hFile, tiffStart, nullptr, FILE_BEGIN);
+                if (ReadFile(hFile, bo, 4, &read, nullptr) && read == 4) {
+                    bool bigEndian = false, okBo = true;
+                    if (bo[0] == 'I' && bo[1] == 'I') bigEndian = false;
+                    else if (bo[0] == 'M' && bo[1] == 'M') bigEndian = true;
+                    else okBo = false;
+
+                    if (okBo) {
+                        auto rd16 = [&](const BYTE* p) -> WORD {
+                            return bigEndian ? (WORD)((p[0] << 8) | p[1]) : (WORD)((p[1] << 8) | p[0]);
+                        };
+                        auto rd32 = [&](const BYTE* p) -> DWORD {
+                            return bigEndian
+                                ? ((DWORD)p[0] << 24) | ((DWORD)p[1] << 16) | ((DWORD)p[2] << 8) | p[3]
+                                : ((DWORD)p[3] << 24) | ((DWORD)p[2] << 16) | ((DWORD)p[1] << 8) | p[0];
+                        };
+                        // RATIONAL[3] (deg,min,sec) -> десятичные градусы
+                        auto readRational3 = [&](DWORD off) -> double {
+                            BYTE buf[24];
+                            SetFilePointer(hFile, off, nullptr, FILE_BEGIN);
+                            DWORD r2 = 0;
+                            if (!ReadFile(hFile, buf, 24, &r2, nullptr) || r2 != 24) return -1.0;
+                            double parts[3];
+                            for (int k = 0; k < 3; k++) {
+                                DWORD num = rd32(buf + k * 8);
+                                DWORD den = rd32(buf + k * 8 + 4);
+                                parts[k] = (den != 0) ? (double)num / (double)den : 0.0;
+                            }
+                            return parts[0] + parts[1] / 60.0 + parts[2] / 3600.0;
+                        };
+
+                        if (rd16(bo + 2) == 0x002A) {
+                            BYTE ifdOffBuf[4];
+                            SetFilePointer(hFile, tiffStart + 4, nullptr, FILE_BEGIN);
+                            if (ReadFile(hFile, ifdOffBuf, 4, &read, nullptr) && read == 4) {
+                                DWORD ifd0Off = rd32(ifdOffBuf);
+                                if (ifd0Off != 0 && ifd0Off <= 0x100000) {
+                                    DWORD ifd0Pos = tiffStart + ifd0Off;
+                                    BYTE cntBuf[2];
+                                    SetFilePointer(hFile, ifd0Pos, nullptr, FILE_BEGIN);
+                                    DWORD gpsIfdPos = 0;
+                                    if (ReadFile(hFile, cntBuf, 2, &read, nullptr) && read == 2) {
+                                        WORD entryCount = rd16(cntBuf);
+                                        if (entryCount <= 200) {
+                                            for (WORD i = 0; i < entryCount; i++) {
+                                                DWORD entryPos = ifd0Pos + 2 + (DWORD)i * 12;
+                                                BYTE entry[12];
+                                                SetFilePointer(hFile, entryPos, nullptr, FILE_BEGIN);
+                                                if (!ReadFile(hFile, entry, 12, &read, nullptr) || read != 12) continue;
+                                                if (rd16(entry) == 0x8825) { // GPSInfoIFDPointer
+                                                    DWORD gpsOff = rd32(entry + 8);
+                                                    if (gpsOff != 0 && gpsOff <= 0x100000)
+                                                        gpsIfdPos = tiffStart + gpsOff;
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    if (gpsIfdPos != 0) {
+                                        BYTE gpsCntBuf[2];
+                                        SetFilePointer(hFile, gpsIfdPos, nullptr, FILE_BEGIN);
+                                        if (ReadFile(hFile, gpsCntBuf, 2, &read, nullptr) && read == 2) {
+                                            WORD gpsCount = rd16(gpsCntBuf);
+                                            if (gpsCount <= 200) {
+                                                for (WORD i = 0; i < gpsCount; i++) {
+                                                    DWORD entryPos = gpsIfdPos + 2 + (DWORD)i * 12;
+                                                    BYTE entry[12];
+                                                    SetFilePointer(hFile, entryPos, nullptr, FILE_BEGIN);
+                                                    if (!ReadFile(hFile, entry, 12, &read, nullptr) || read != 12) continue;
+                                                    WORD tag = rd16(entry);
+                                                    WORD type = rd16(entry + 2);
+                                                    DWORD count = rd32(entry + 4);
+
+                                                    if (tag == 0x0001 && type == 2 && count >= 1) { // LatRef
+                                                        latRef = (char)entry[8];
+                                                    } else if (tag == 0x0003 && type == 2 && count >= 1) { // LonRef
+                                                        lonRef = (char)entry[8];
+                                                    } else if (tag == 0x0002 && type == 5 && count == 3) { // Lat
+                                                        double v = readRational3(tiffStart + rd32(entry + 8));
+                                                        if (v >= 0) { lat = v; foundLat = true; }
+                                                    } else if (tag == 0x0004 && type == 5 && count == 3) { // Lon
+                                                        double v = readRational3(tiffStart + rd32(entry + 8));
+                                                        if (v >= 0) { lon = v; foundLon = true; }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    doneScanning = true; // IFD0/GPS IFD один раз, дальше в файле не встретится
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        pos += 2 + segLen;
+    }
+
+    CloseHandle(hFile);
+    if (!foundLat || !foundLon || !latRef || !lonRef) return false;
+
+    if (latRef == 'S' || latRef == 's') lat = -lat;
+    if (lonRef == 'W' || lonRef == 'w') lon = -lon;
+    if (lat < -90.0 || lat > 90.0 || lon < -180.0 || lon > 180.0) return false;
+
+    *outLat = lat;
+    *outLon = lon;
+    return true;
+}
+
 void Cmd_RotateLeft(HWND owner, const SelectionInfo& sel) { DoRotateOperation(owner, sel, false); }
 void Cmd_RotateRight(HWND owner, const SelectionInfo& sel) { DoRotateOperation(owner, sel, true); }

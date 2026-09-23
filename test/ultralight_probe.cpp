@@ -25,6 +25,7 @@ typedef void           (STDAPICALLTYPE *Fn_ulViewConfigSetIsAccelerated)(ULViewC
 typedef ULView         (STDAPICALLTYPE *Fn_ulCreateView)(ULRenderer, unsigned int, unsigned int, ULViewConfig, ULSession);
 typedef void           (STDAPICALLTYPE *Fn_ulDestroyView)(ULView);
 typedef void           (STDAPICALLTYPE *Fn_ulViewLoadHTML)(ULView, ULString);
+typedef void           (STDAPICALLTYPE *Fn_ulViewLoadURL)(ULView, ULString);
 typedef void           (STDAPICALLTYPE *Fn_ulUpdate)(ULRenderer);
 typedef void           (STDAPICALLTYPE *Fn_ulRender)(ULRenderer);
 typedef ULSurface      (STDAPICALLTYPE *Fn_ulViewGetSurface)(ULView);
@@ -52,6 +53,7 @@ struct UL {
     Fn_ulCreateView                      CreateView;
     Fn_ulDestroyView                     DestroyView;
     Fn_ulViewLoadHTML                    ViewLoadHTML;
+    Fn_ulViewLoadURL                     ViewLoadURL;
     Fn_ulUpdate                          Update;
     Fn_ulRender                          Render;
     Fn_ulViewGetSurface                  ViewGetSurface;
@@ -148,6 +150,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int)
     LOAD(hUltralight, CreateView);
     LOAD(hUltralight, DestroyView);
     LOAD(hUltralight, ViewLoadHTML);
+    LOAD(hUltralight, ViewLoadURL);
     LOAD(hUltralight, Update);
     LOAD(hUltralight, Render);
     LOAD(hUltralight, ViewGetSurface);
@@ -181,12 +184,9 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int)
     g_view = ul.CreateView(g_renderer, 800, 600, vc, nullptr);
     ul.DestroyViewConfig(vc);
 
-    ULString html = ul.CreateString(
-        "<html><body style='font-family:sans-serif;background:#eef'>"
-        "<h1>Ultralight embed OK</h1><p>CPU-\u0440\u0435\u043D\u0434\u0435\u0440, \u0431\u0435\u0437 \u043E\u0442\u0434\u0435\u043B\u044C\u043D\u043E\u0433\u043E \u0440\u0430\u043D\u0442\u0430\u0439\u043C\u0430.</p>"
-        "</body></html>");
-    ul.ViewLoadHTML(g_view, html);
-    ul.DestroyString(html);
+    ULString url = ul.CreateString("file:///leaflet_page/page.html");
+    ul.ViewLoadURL(g_view, url);
+    ul.DestroyString(url);
 
     WNDCLASSW wc = {};
     wc.lpfnWndProc = WndProc;

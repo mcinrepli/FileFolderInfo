@@ -114,6 +114,7 @@ bool GetPeArchAndDotNetInfo(const std::wstring& path, std::wstring* archText, st
 
 // ---- rotate.cpp: EXIF (JPEG) ----
 bool FindExifDateTaken(const std::wstring& path, SYSTEMTIME* outLocal); // DateTimeOriginal/DateTimeDigitized/DateTime
+bool FindExifGPS(const std::wstring& path, double* outLat, double* outLon); // GPSLatitude/GPSLongitude
 
 // ---- metadata.cpp: разбор ярлыков (.lnk) — ручной разбор по MS-SHLLINK, без COM/IShellLinkW ----
 struct ShortcutInfo {
