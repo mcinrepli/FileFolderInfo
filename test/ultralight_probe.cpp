@@ -1,4 +1,5 @@
 #include <windows.h>
+#include <windowsx.h>
 #include <cstdio>
 
 // Официальные заголовки — только ради типов (ULView, ULRenderer, структуры)
@@ -35,6 +36,12 @@ typedef void           (STDAPICALLTYPE *Fn_ulBitmapUnlockPixels)(ULBitmap);
 typedef unsigned int   (STDAPICALLTYPE *Fn_ulBitmapGetWidth)(ULBitmap);
 typedef unsigned int   (STDAPICALLTYPE *Fn_ulBitmapGetHeight)(ULBitmap);
 typedef unsigned int   (STDAPICALLTYPE *Fn_ulBitmapGetRowBytes)(ULBitmap);
+typedef ULMouseEvent   (STDAPICALLTYPE *Fn_ulCreateMouseEvent)(ULMouseEventType, int, int, ULMouseButton);
+typedef void           (STDAPICALLTYPE *Fn_ulDestroyMouseEvent)(ULMouseEvent);
+typedef void           (STDAPICALLTYPE *Fn_ulViewFireMouseEvent)(ULView, ULMouseEvent);
+typedef ULScrollEvent  (STDAPICALLTYPE *Fn_ulCreateScrollEvent)(ULScrollEventType, int, int);
+typedef void           (STDAPICALLTYPE *Fn_ulDestroyScrollEvent)(ULScrollEvent);
+typedef void           (STDAPICALLTYPE *Fn_ulViewFireScrollEvent)(ULView, ULScrollEvent);
 
 struct UL {
     Fn_ulEnablePlatformFontLoader        EnablePlatformFontLoader;
@@ -63,6 +70,12 @@ struct UL {
     Fn_ulBitmapGetWidth                  BitmapGetWidth;
     Fn_ulBitmapGetHeight                 BitmapGetHeight;
     Fn_ulBitmapGetRowBytes               BitmapGetRowBytes;
+    Fn_ulCreateMouseEvent                CreateMouseEvent;
+    Fn_ulDestroyMouseEvent               DestroyMouseEvent;
+    Fn_ulViewFireMouseEvent              ViewFireMouseEvent;
+    Fn_ulCreateScrollEvent               CreateScrollEvent;
+    Fn_ulDestroyScrollEvent              DestroyScrollEvent;
+    Fn_ulViewFireScrollEvent             ViewFireScrollEvent;
 } ul;
 
 #define LOAD(mod, name) \
@@ -104,6 +117,49 @@ void BlitViewToWindow()
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
     switch (msg) {
+    case WM_MOUSEMOVE: {
+        int x = GET_X_LPARAM(lp), y = GET_Y_LPARAM(lp);
+        ULMouseButton btn = (wp & MK_LBUTTON) ? kMouseButton_Left
+                          : (wp & MK_RBUTTON) ? kMouseButton_Right
+                          : (wp & MK_MBUTTON) ? kMouseButton_Middle : kMouseButton_None;
+        ULMouseEvent ev = ul.CreateMouseEvent(kMouseEventType_MouseMoved, x, y, btn);
+        ul.ViewFireMouseEvent(g_view, ev);
+        ul.DestroyMouseEvent(ev);
+        return 0;
+    }
+    case WM_LBUTTONDOWN:
+    case WM_RBUTTONDOWN:
+    case WM_MBUTTONDOWN: {
+        SetCapture(hwnd);
+        int x = GET_X_LPARAM(lp), y = GET_Y_LPARAM(lp);
+        ULMouseButton btn = (msg == WM_LBUTTONDOWN) ? kMouseButton_Left
+                           : (msg == WM_RBUTTONDOWN) ? kMouseButton_Right : kMouseButton_Middle;
+        ULMouseEvent ev = ul.CreateMouseEvent(kMouseEventType_MouseDown, x, y, btn);
+        ul.ViewFireMouseEvent(g_view, ev);
+        ul.DestroyMouseEvent(ev);
+        return 0;
+    }
+    case WM_LBUTTONUP:
+    case WM_RBUTTONUP:
+    case WM_MBUTTONUP: {
+        ReleaseCapture();
+        int x = GET_X_LPARAM(lp), y = GET_Y_LPARAM(lp);
+        ULMouseButton btn = (msg == WM_LBUTTONUP) ? kMouseButton_Left
+                           : (msg == WM_RBUTTONUP) ? kMouseButton_Right : kMouseButton_Middle;
+        ULMouseEvent ev = ul.CreateMouseEvent(kMouseEventType_MouseUp, x, y, btn);
+        ul.ViewFireMouseEvent(g_view, ev);
+        ul.DestroyMouseEvent(ev);
+        return 0;
+    }
+    case WM_MOUSEWHEEL: {
+        int delta = GET_WHEEL_DELTA_WPARAM(wp); // обычно ±120 за "щелчок" колеса
+        // пиксели на "щелчок" — эмпирически удобное для Leaflet значение
+        int pixelDelta = (delta * 100) / WHEEL_DELTA;
+        ULScrollEvent ev = ul.CreateScrollEvent(kScrollEventType_ScrollByPixel, 0, pixelDelta);
+        ul.ViewFireScrollEvent(g_view, ev);
+        ul.DestroyScrollEvent(ev);
+        return 0;
+    }
     case WM_TIMER:
         ul.Update(g_renderer);
         ul.Render(g_renderer);
@@ -160,6 +216,12 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int)
     LOAD(hUltralight, BitmapGetWidth);
     LOAD(hUltralight, BitmapGetHeight);
     LOAD(hUltralight, BitmapGetRowBytes);
+    LOAD(hUltralight, CreateMouseEvent);
+    LOAD(hUltralight, DestroyMouseEvent);
+    LOAD(hUltralight, ViewFireMouseEvent);
+    LOAD(hUltralight, CreateScrollEvent);
+    LOAD(hUltralight, DestroyScrollEvent);
+    LOAD(hUltralight, ViewFireScrollEvent);
 
     ul.EnablePlatformFontLoader();
 
