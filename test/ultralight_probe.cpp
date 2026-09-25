@@ -114,6 +114,16 @@ void BlitViewToWindow()
     (void)stride;
 }
 
+// Не ждём следующего тика таймера (16мс) — сразу после события ввода
+// прогоняем Update+Render+Blit, чтобы отклик был мгновенным, а не с
+// задержкой до ближайшего WM_TIMER.
+void PumpAndBlit()
+{
+    ul.Update(g_renderer);
+    ul.Render(g_renderer);
+    BlitViewToWindow();
+}
+
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
     switch (msg) {
@@ -125,6 +135,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         ULMouseEvent ev = ul.CreateMouseEvent(kMouseEventType_MouseMoved, x, y, btn);
         ul.ViewFireMouseEvent(g_view, ev);
         ul.DestroyMouseEvent(ev);
+        PumpAndBlit();
         return 0;
     }
     case WM_LBUTTONDOWN:
@@ -137,6 +148,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         ULMouseEvent ev = ul.CreateMouseEvent(kMouseEventType_MouseDown, x, y, btn);
         ul.ViewFireMouseEvent(g_view, ev);
         ul.DestroyMouseEvent(ev);
+        PumpAndBlit();
         return 0;
     }
     case WM_LBUTTONUP:
@@ -149,6 +161,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         ULMouseEvent ev = ul.CreateMouseEvent(kMouseEventType_MouseUp, x, y, btn);
         ul.ViewFireMouseEvent(g_view, ev);
         ul.DestroyMouseEvent(ev);
+        PumpAndBlit();
         return 0;
     }
     case WM_MOUSEWHEEL: {
@@ -158,6 +171,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         ULScrollEvent ev = ul.CreateScrollEvent(kScrollEventType_ScrollByPixel, 0, pixelDelta);
         ul.ViewFireScrollEvent(g_view, ev);
         ul.DestroyScrollEvent(ev);
+        PumpAndBlit();
         return 0;
     }
     case WM_TIMER:
