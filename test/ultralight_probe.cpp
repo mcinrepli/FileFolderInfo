@@ -127,6 +127,11 @@ void PumpAndBlit()
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
     switch (msg) {
+    case WM_KILLFOCUS: {
+        FILE* f = fopen("ultralight_probe_input.log", "a");
+        if (f) { fprintf(f, "WM_KILLFOCUS — \u0444\u043E\u043A\u0443\u0441 \u0443\u0448\u0451\u043B \u043A %p\n", (void*)wp); fclose(f); }
+        return 0;
+    }
     case WM_MOUSEMOVE: {
         int x = GET_X_LPARAM(lp), y = GET_Y_LPARAM(lp);
         ULMouseButton btn = (wp & MK_LBUTTON) ? kMouseButton_Left
@@ -166,6 +171,11 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     }
     case WM_MOUSEWHEEL: {
         int delta = GET_WHEEL_DELTA_WPARAM(wp); // обычно ±120 за "щелчок" колеса
+        {
+            FILE* f = fopen("ultralight_probe_input.log", "a");
+            if (f) { fprintf(f, "WM_MOUSEWHEEL delta=%d focus=%p this_hwnd=%p\n",
+                              delta, (void*)GetFocus(), (void*)hwnd); fclose(f); }
+        }
         // пиксели на "щелчок" — эмпирически удобное для Leaflet значение
         int pixelDelta = (delta * 100) / WHEEL_DELTA;
         ULScrollEvent ev = ul.CreateScrollEvent(kScrollEventType_ScrollByPixel, 0, pixelDelta);
@@ -275,6 +285,8 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int)
                            WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 820, 640,
                            nullptr, nullptr, hInst, nullptr);
     ShowWindow(g_hwnd, SW_SHOW);
+    SetForegroundWindow(g_hwnd);
+    SetFocus(g_hwnd);
     SetTimer(g_hwnd, 1, 16, nullptr); // ~60 fps апдейт/рендер
 
     MSG msg;
