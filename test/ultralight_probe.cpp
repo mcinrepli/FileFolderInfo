@@ -178,6 +178,16 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         }
         // пиксели на "щелчок" — эмпирически удобное для Leaflet значение
         int pixelDelta = (delta * 100) / WHEEL_DELTA;
+
+        // Координаты в WM_MOUSEWHEEL — ЭКРАННЫЕ, не клиентские (в отличие от
+        // WM_MOUSEMOVE/кнопок). Похоже, движку для скролла/зума важно не
+        // само событие, а его ВНУТРЕННЕЕ состояние "что под курсором",
+        // обновляемое именно MouseMoved — а scroll-событие такой позиции
+        // не несёт вообще. Явно освежаем перед прокруткой.
+        POINT pt; GetCursorPos(&pt); ScreenToClient(hwnd, &pt);
+        ULMouseEvent moveEv = ul.CreateMouseEvent(kMouseEventType_MouseMoved, pt.x, pt.y, kMouseButton_None);
+        ul.ViewFireMouseEvent(g_view, moveEv);
+        ul.DestroyMouseEvent(moveEv);
         ULScrollEvent ev = ul.CreateScrollEvent(kScrollEventType_ScrollByPixel, 0, pixelDelta);
         ul.ViewFireScrollEvent(g_view, ev);
         ul.DestroyScrollEvent(ev);
