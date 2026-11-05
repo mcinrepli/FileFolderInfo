@@ -1,6 +1,7 @@
 #include <windows.h>
 #include <windowsx.h>
 #include <cstdio>
+#include <cstdarg>
 
 // Официальные заголовки — только ради типов (ULView, ULRenderer, структуры)
 // и сигнатур для typedef'ов. Сами функции берём через GetProcAddress, не
@@ -42,6 +43,9 @@ typedef void           (STDAPICALLTYPE *Fn_ulViewFireMouseEvent)(ULView, ULMouse
 typedef ULScrollEvent  (STDAPICALLTYPE *Fn_ulCreateScrollEvent)(ULScrollEventType, int, int);
 typedef void           (STDAPICALLTYPE *Fn_ulDestroyScrollEvent)(ULScrollEvent);
 typedef void           (STDAPICALLTYPE *Fn_ulViewFireScrollEvent)(ULView, ULScrollEvent);
+typedef void           (STDAPICALLTYPE *Fn_ulViewResize)(ULView, unsigned int, unsigned int);
+typedef void           (STDAPICALLTYPE *Fn_ulViewSetNeedsPaint)(ULView, bool);
+typedef bool           (STDAPICALLTYPE *Fn_ulViewGetNeedsPaint)(ULView);
 
 struct UL {
     Fn_ulEnablePlatformFontLoader        EnablePlatformFontLoader;
@@ -76,6 +80,9 @@ struct UL {
     Fn_ulCreateScrollEvent               CreateScrollEvent;
     Fn_ulDestroyScrollEvent              DestroyScrollEvent;
     Fn_ulViewFireScrollEvent             ViewFireScrollEvent;
+    Fn_ulViewResize                      ViewResize;
+    Fn_ulViewSetNeedsPaint               ViewSetNeedsPaint;
+    Fn_ulViewGetNeedsPaint               ViewGetNeedsPaint;
 } ul;
 
 #define LOAD(mod, name) \
@@ -117,9 +124,27 @@ void BlitViewToWindow()
 // Не ждём следующего тика таймера (16мс) — сразу после события ввода
 // прогоняем Update+Render+Blit, чтобы отклик был мгновенным, а не с
 // задержкой до ближайшего WM_TIMER.
+static void ProbeLog(const char* fmt, ...)
+{
+    FILE* f = fopen("ultralight_probe_input.log", "a");
+    if (!f) return;
+    fprintf(f, "[%lu] ", (unsigned long)GetTickCount());
+    va_list a; va_start(a, fmt); vfprintf(f, fmt, a); va_end(a);
+    fputc('\n', f);
+    fclose(f);
+}
+
+// ГИПОТЕЗА (по наблюдениям пользователя): зум от колеса в JS происходит сразу,
+// но флаг "нужна перерисовка" у view не ставится (CSS-transform-анимации Leaflet),
+// поэтому картинка не обновляется, пока что-то другое (hover по кнопке, попап
+// маркера) не поменяет DOM и не выставит флаг. Лог пишет, был ли флаг выставлен
+// движком САМ, затем форсируем перерисовку вручную.
 void PumpAndBlit()
 {
     ul.Update(g_renderer);
+    bool flagBefore = ul.ViewGetNeedsPaint(g_view);
+    if (!flagBefore) ProbeLog("needsPaint=0 after Update (forcing repaint)");
+    ul.ViewSetNeedsPaint(g_view, true);
     ul.Render(g_renderer);
     BlitViewToWindow();
 }
@@ -196,9 +221,20 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     }
     case WM_TIMER:
         ul.Update(g_renderer);
+        ul.ViewSetNeedsPaint(g_view, true);
         ul.Render(g_renderer);
         BlitViewToWindow();
         return 0;
+    case WM_SIZE: {
+        // Раньше вьюпорт был зафиксирован 800x600 и не следил за окном —
+        // при увеличении окна карта оставалась прежнего размера.
+        unsigned int w = LOWORD(lp), h = HIWORD(lp);
+        if (g_view && w > 0 && h > 0) {
+            ul.ViewResize(g_view, w, h);
+            PumpAndBlit();
+        }
+        return 0;
+    }
     case WM_PAINT: {
         PAINTSTRUCT ps;
         BeginPaint(hwnd, &ps);
@@ -256,6 +292,9 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int)
     LOAD(hUltralight, CreateScrollEvent);
     LOAD(hUltralight, DestroyScrollEvent);
     LOAD(hUltralight, ViewFireScrollEvent);
+    LOAD(hUltralight, ViewResize);
+    LOAD(hUltralight, ViewSetNeedsPaint);
+    LOAD(hUltralight, ViewGetNeedsPaint);
 
     ul.EnablePlatformFontLoader();
 
