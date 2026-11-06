@@ -14,8 +14,28 @@
 <div id="map"></div>
 <script src="leaflet.js"></script>
 <script>
+  // --- диагностика (безвредна для обычной работы) ---
+  window.__wheelCount = 0;
+  window.__lastWheelDeltaY = null;
+  window.__rafCount = 0;
+  window.__wheelTimes = [];
+  window.addEventListener('wheel', function(e) {
+    window.__wheelCount++;
+    window.__lastWheelDeltaY = e.deltaY;
+    window.__wheelTimes.push(Date.now());
+  }, {passive: true, capture: true});
+  (function tick(){ window.__rafCount++; requestAnimationFrame(tick); })();
+
+  var params = new URLSearchParams(location.search);
+
   // Киев, раз уж тестируем — реальные координаты, не заглушка
   var map = L.map('map').setView([50.4501, 30.5234], 12);
+
+  // ?noanim=1 — выключить zoomAnimation (проверка гипотезы про CSS-transform-слой)
+  if (params.get('noanim') === '1') {
+    map.options.zoomAnimation = false;
+    document.getElementById('status').innerText += ' | NOANIM';
+  }
 
   var tileCount = 0;
   var tiles = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -30,6 +50,17 @@
   tiles.on('tileerror', function(e) {
     document.getElementById('status').innerText = 'tile ERROR: ' + (e && e.error ? e.error : '?');
   });
+
+  // Живой статус: зум, счётчик колеса, кадры — видно глазами, без логов
+  var baseStatus = document.getElementById('status');
+  setInterval(function() {
+    baseStatus.setAttribute('data-diag',
+      'zoom=' + map.getZoom() + ' wheel=' + window.__wheelCount +
+      ' raf=' + window.__rafCount);
+    baseStatus.innerText = 'zoom=' + map.getZoom() +
+      ' | wheel=' + window.__wheelCount + ' | raf=' + window.__rafCount +
+      ' | tiles=' + tileCount + (params.get('noanim') === '1' ? ' | NOANIM' : '');
+  }, 250);
 
   // Простой маркер без внешних иконок — circleMarker, ничего дополнительно грузить не нужно
   L.circleMarker([50.4501, 30.5234], {radius: 8, color: 'red', fillColor: 'red', fillOpacity: 0.8})

@@ -46,6 +46,9 @@ typedef void           (STDAPICALLTYPE *Fn_ulViewFireScrollEvent)(ULView, ULScro
 typedef void           (STDAPICALLTYPE *Fn_ulViewResize)(ULView, unsigned int, unsigned int);
 typedef void           (STDAPICALLTYPE *Fn_ulViewSetNeedsPaint)(ULView, bool);
 typedef bool           (STDAPICALLTYPE *Fn_ulViewGetNeedsPaint)(ULView);
+typedef void           (STDAPICALLTYPE *Fn_ulConfigSetForceRepaint)(ULConfig, bool);
+typedef ULString       (STDAPICALLTYPE *Fn_ulViewEvaluateScript)(ULView, ULString, ULString*);
+typedef char*          (STDAPICALLTYPE *Fn_ulStringGetData)(ULString);
 
 struct UL {
     Fn_ulEnablePlatformFontLoader        EnablePlatformFontLoader;
@@ -83,6 +86,9 @@ struct UL {
     Fn_ulViewResize                      ViewResize;
     Fn_ulViewSetNeedsPaint               ViewSetNeedsPaint;
     Fn_ulViewGetNeedsPaint               ViewGetNeedsPaint;
+    Fn_ulConfigSetForceRepaint           ConfigSetForceRepaint;
+    Fn_ulViewEvaluateScript              ViewEvaluateScript;
+    Fn_ulStringGetData                   StringGetData;
 } ul;
 
 #define LOAD(mod, name) \
@@ -94,6 +100,23 @@ struct UL {
 static ULRenderer g_renderer = nullptr;
 static ULView g_view = nullptr;
 static HWND g_hwnd = nullptr;
+
+// --- диагностика -----------------------------------------------------------
+// FFI_FORCE_REPAINT=1  — включить Config::force_repaint (перерисовывать всё
+//                        каждый кадр, независимо от dirty-флага).
+// FFI_NOANIM=1         — после загрузки страницы выключить zoomAnimation у
+//                        Leaflet (проверка гипотезы про CSS-transform-слой).
+// FFI_DIAG=1           — писать в лог хеш битмапа и счётчики из JS.
+static bool g_forceRepaint = false;
+static bool g_noAnim = false;
+static bool g_diag = false;
+
+static bool GetEnvFlag(const wchar_t* name)
+{
+    wchar_t buf[8] = {};
+    DWORD n = GetEnvironmentVariableW(name, buf, 8);
+    return n > 0 && buf[0] == L'1';
+}
 
 void BlitViewToWindow()
 {
@@ -121,6 +144,30 @@ void BlitViewToWindow()
     (void)stride;
 }
 
+// Быстрый FNV-1a по пикселям — показывает, ИЗМЕНИЛАСЬ ли картинка физически.
+// Если после зума хеш не меняется, значит рендер не отрисовал новый кадр
+// (проблема в dirty-флаге), а не в блите на экран.
+static unsigned int HashBitmap()
+{
+    ULSurface surface = ul.ViewGetSurface(g_view);
+    ULBitmap bitmap = ul.BitmapSurfaceGetBitmap(surface);
+    unsigned int h = ul.BitmapGetHeight(bitmap);
+    unsigned int stride = ul.BitmapGetRowBytes(bitmap);
+    unsigned char* p = (unsigned char*)ul.BitmapLockPixels(bitmap);
+    unsigned int hash = 2166136261u;
+    if (p) {
+        // Сэмплим не каждый байт — 1 из 16 достаточно для детекции изменений
+        // и не тормозит рендер на 800x600x4.
+        size_t total = (size_t)stride * h;
+        for (size_t i = 0; i < total; i += 16) {
+            hash ^= p[i];
+            hash *= 16777619u;
+        }
+    }
+    ul.BitmapUnlockPixels(bitmap);
+    return hash;
+}
+
 // Не ждём следующего тика таймера (16мс) — сразу после события ввода
 // прогоняем Update+Render+Blit, чтобы отклик был мгновенным, а не с
 // задержкой до ближайшего WM_TIMER.
@@ -134,18 +181,47 @@ static void ProbeLog(const char* fmt, ...)
     fclose(f);
 }
 
+// Выполнить JS и вернуть результат строкой (для диагностики из лога).
+static void EvalLog(const char* label, const char* js)
+{
+    ULString script = ul.CreateString(js);
+    ULString exc = nullptr;
+    ULString res = ul.ViewEvaluateScript(g_view, script, &exc);
+    ul.DestroyString(script);
+    if (exc) {
+        char* ed = ul.StringGetData(exc);
+        ProbeLog("%s EXC: %s", label, ed ? ed : "?");
+        ul.DestroyString(exc);
+        return;
+    }
+    if (res) {
+        char* rd = ul.StringGetData(res);
+        ProbeLog("%s = %s", label, rd ? rd : "null");
+        ul.DestroyString(res);
+    } else {
+        ProbeLog("%s = <null>", label);
+    }
+}
+
 // ГИПОТЕЗА (по наблюдениям пользователя): зум от колеса в JS происходит сразу,
 // но флаг "нужна перерисовка" у view не ставится (CSS-transform-анимации Leaflet),
 // поэтому картинка не обновляется, пока что-то другое (hover по кнопке, попап
 // маркера) не поменяет DOM и не выставит флаг. Лог пишет, был ли флаг выставлен
 // движком САМ, затем форсируем перерисовку вручную.
-void PumpAndBlit()
+void PumpAndBlit(const char* reason)
 {
     ul.Update(g_renderer);
     bool flagBefore = ul.ViewGetNeedsPaint(g_view);
-    if (!flagBefore) ProbeLog("needsPaint=0 after Update (forcing repaint)");
     ul.ViewSetNeedsPaint(g_view, true);
     ul.Render(g_renderer);
+    if (g_diag) {
+        static unsigned int lastHash = 0;
+        unsigned int h = HashBitmap();
+        ProbeLog("%s: needsPaintBefore=%d hash=%08x %s",
+                 reason ? reason : "?", (int)flagBefore, h,
+                 (h == lastHash) ? "(unchanged)" : "(CHANGED)");
+        lastHash = h;
+    }
     BlitViewToWindow();
 }
 
@@ -165,7 +241,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         ULMouseEvent ev = ul.CreateMouseEvent(kMouseEventType_MouseMoved, x, y, btn);
         ul.ViewFireMouseEvent(g_view, ev);
         ul.DestroyMouseEvent(ev);
-        PumpAndBlit();
+        PumpAndBlit("mousemove");
         return 0;
     }
     case WM_LBUTTONDOWN:
@@ -178,7 +254,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         ULMouseEvent ev = ul.CreateMouseEvent(kMouseEventType_MouseDown, x, y, btn);
         ul.ViewFireMouseEvent(g_view, ev);
         ul.DestroyMouseEvent(ev);
-        PumpAndBlit();
+        PumpAndBlit("mousedown");
         return 0;
     }
     case WM_LBUTTONUP:
@@ -191,7 +267,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         ULMouseEvent ev = ul.CreateMouseEvent(kMouseEventType_MouseUp, x, y, btn);
         ul.ViewFireMouseEvent(g_view, ev);
         ul.DestroyMouseEvent(ev);
-        PumpAndBlit();
+        PumpAndBlit("mouseup");
         return 0;
     }
     case WM_MOUSEWHEEL: {
@@ -201,14 +277,18 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             if (f) { fprintf(f, "WM_MOUSEWHEEL delta=%d focus=%p this_hwnd=%p\n",
                               delta, (void*)GetFocus(), (void*)hwnd); fclose(f); }
         }
+        if (g_diag) {
+            EvalLog("wheel: zoomBefore", "map.getZoom()");
+            EvalLog("wheel: deltaY-js", "String(window.__lastWheelDeltaY)");
+        }
+
         // пиксели на "щелчок" — эмпирически удобное для Leaflet значение
         int pixelDelta = (delta * 100) / WHEEL_DELTA;
 
         // Координаты в WM_MOUSEWHEEL — ЭКРАННЫЕ, не клиентские (в отличие от
-        // WM_MOUSEMOVE/кнопок). Похоже, движку для скролла/зума важно не
-        // само событие, а его ВНУТРЕННЕЕ состояние "что под курсором",
-        // обновляемое именно MouseMoved — а scroll-событие такой позиции
-        // не несёт вообще. Явно освежаем перед прокруткой.
+        // WM_MOUSEMOVE/кнопок). Движку для скролла/зума важно ВНУТРЕННЕЕ
+        // состояние "что под курсором", обновляемое именно MouseMoved —
+        // scroll-событие такой позиции не несёт вообще. Освежаем перед прокруткой.
         POINT pt; GetCursorPos(&pt); ScreenToClient(hwnd, &pt);
         ULMouseEvent moveEv = ul.CreateMouseEvent(kMouseEventType_MouseMoved, pt.x, pt.y, kMouseButton_None);
         ul.ViewFireMouseEvent(g_view, moveEv);
@@ -216,10 +296,37 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         ULScrollEvent ev = ul.CreateScrollEvent(kScrollEventType_ScrollByPixel, 0, pixelDelta);
         ul.ViewFireScrollEvent(g_view, ev);
         ul.DestroyScrollEvent(ev);
-        PumpAndBlit();
+        PumpAndBlit("wheel-now");
+
+        // ВАЖНО: Leaflet применяет зум колесом НЕ сразу, а через
+        // setTimeout(_performZoom, wheelDebounceTime=40мс) + CSS-transition
+        // (~250мс). Поэтому мгновенный PumpAndBlit выше физически не может
+        // показать результат. Планируем отложенные кадры, чтобы поймать
+        // момент, когда зум уже применён (и записать хеш картинки).
+        SetTimer(hwnd, 2, 60, nullptr);   // после debounce (~40мс)
+        SetTimer(hwnd, 3, 320, nullptr);  // после transition (~250мс)
         return 0;
     }
     case WM_TIMER:
+        if (wp == 99) {
+            KillTimer(hwnd, 99);
+            ProbeLog("=== baseline (page loaded) ===");
+            EvalLog("baseline zoom", "map.getZoom()");
+            EvalLog("baseline wheel", "window.__wheelCount");
+            EvalLog("baseline raf", "window.__rafCount");
+            EvalLog("baseline anim", "map.options.zoomAnimation");
+            PumpAndBlit("baseline");
+            return 0;
+        }
+        if (wp == 2 || wp == 3) {
+            KillTimer(hwnd, (UINT_PTR)wp);   // одноразовый
+            const char* which = (wp == 2) ? "wheel+60ms" : "wheel+320ms";
+            if (g_diag) {
+                EvalLog("  zoomAfter", "map.getZoom()");
+            }
+            PumpAndBlit(which);
+            return 0;
+        }
         ul.Update(g_renderer);
         ul.ViewSetNeedsPaint(g_view, true);
         ul.Render(g_renderer);
@@ -231,7 +338,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         unsigned int w = LOWORD(lp), h = HIWORD(lp);
         if (g_view && w > 0 && h > 0) {
             ul.ViewResize(g_view, w, h);
-            PumpAndBlit();
+            PumpAndBlit("resize");
         }
         return 0;
     }
@@ -251,6 +358,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 
 int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int)
 {
+    g_forceRepaint = GetEnvFlag(L"FFI_FORCE_REPAINT");
+    g_noAnim       = GetEnvFlag(L"FFI_NOANIM");
+    g_diag         = GetEnvFlag(L"FFI_DIAG");
+
     // Загружаем обе DLL из папки, где лежит сама проба (SetDllDirectory не
     // нужен — Windows и так первой проверяет каталог exe).
     HMODULE hUltralight = LoadLibraryW(L"Ultralight.dll");
@@ -295,6 +406,9 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int)
     LOAD(hUltralight, ViewResize);
     LOAD(hUltralight, ViewSetNeedsPaint);
     LOAD(hUltralight, ViewGetNeedsPaint);
+    LOAD(hUltralight, ConfigSetForceRepaint);
+    LOAD(hUltralight, ViewEvaluateScript);
+    LOAD(hUltralight, StringGetData);
 
     ul.EnablePlatformFontLoader();
 
@@ -310,6 +424,10 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int)
     ULString resPath = ul.CreateString("./resources/");
     ul.ConfigSetResourcePathPrefix(config, resPath);
     ul.DestroyString(resPath);
+    if (g_forceRepaint) {
+        ul.ConfigSetForceRepaint(config, true);
+        ProbeLog("force_repaint=ON");
+    }
 
     g_renderer = ul.CreateRenderer(config);
     ul.DestroyConfig(config);
@@ -319,7 +437,10 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int)
     g_view = ul.CreateView(g_renderer, 800, 600, vc, nullptr);
     ul.DestroyViewConfig(vc);
 
-    ULString url = ul.CreateString("file:///leaflet_page/page.html");
+    const char* pageUrl = g_noAnim
+        ? "file:///leaflet_page/page.html?noanim=1"
+        : "file:///leaflet_page/page.html";
+    ULString url = ul.CreateString(pageUrl);
     ul.ViewLoadURL(g_view, url);
     ul.DestroyString(url);
 
@@ -337,6 +458,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int)
     SetForegroundWindow(g_hwnd);
     SetFocus(g_hwnd);
     SetTimer(g_hwnd, 1, 16, nullptr); // ~60 fps апдейт/рендер
+    if (g_diag) SetTimer(g_hwnd, 99, 1500, nullptr); // эталонное состояние до колеса
 
     MSG msg;
     while (GetMessageW(&msg, nullptr, 0, 0)) {
