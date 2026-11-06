@@ -63,4 +63,11 @@ msvcrt, ole32). Ultralight подгружается динамически и в
 - Рабочая ветка — `openhands-dev` (не пушить в `main` без явной просьбы).
 - user.name `mcinrepli`, user.email
   `300741771+mcinrepli@users.noreply.github.com` (слетает при сбросе песочницы).
-- `credential.helper=store` не работает — подставлять токен в URL remote.
+- `credential.helper=store` не работает. Remote держать чистым, а токен
+  подставлять только на время push и сразу возвращать обратно:
+
+  ```
+  git remote set-url origin https://x-access-token:$GITHUB_TOKEN@github.com/mcinrepli/FileFolderInfo
+  git push origin openhands-dev
+  git remote set-url origin https://github.com/mcinrepli/FileFolderInfo
+  ```
