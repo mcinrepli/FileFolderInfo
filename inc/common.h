@@ -78,9 +78,12 @@ struct CopySuffixInfo {
 };
 CopySuffixInfo ParseCopySuffix(const std::wstring& name, bool isFolder);
 
+// Открыть GPS URL: встроенный Ultralight-помощник, системный браузер или выбранный браузер.
+void OpenMapUrl(HWND owner, HWND anchor, const std::wstring& url);
+
 // Показ окошка с несколькими строками "подпись: значение", каждая строка - копируемое поле
 struct InfoRow { std::wstring label; std::wstring value; int action = 0; int extraLines = 0; };
-// action: 0 = нет доп. кнопки, 1 = «Открыть» (ShellExecute open), 2 = «Показать в папке» (explorer /select)
+// action: 0 = нет кнопки; 1 = открыть ShellExecute; 2 = показать в папке; 3 = меню GPS-ссылки
 
 // Возврат: 0 = закрыто, 1 = нажали «Далее», -1 = нажали «Назад».
 // showNav включает кнопки навигации; enablePrev/enableNext управляют их доступностью.

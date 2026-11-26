@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+from pathlib import Path
 
 def esc(s: str) -> str:
     out = []
@@ -39,6 +40,8 @@ STRINGS = {
     "ITEM_DATE_MODIFIED": "Дату изменения...",
     "ITEM_DATE_CREATED": "Дату создания...",
     "ITEM_DATE_ACCESSED": "Дату доступа...",
+    "ITEM_APPEND_EXIF_DATE": "Добавить дату из EXIF к имени",
+    "ITEM_FIX_DATES_EXIF": "Исправить даты по EXIF",
     "ITEM_TREE_PATHS": "Дерево путей",
     "ITEM_TREE_NAMES": "Дерево имён",
 
@@ -64,6 +67,8 @@ STRINGS = {
     "HELP_RENAME_NUMBER": "Заменить хвост \u00ab\u2014 копия\u00bb на -1, -2, -3...",
     "HELP_RENAME_DATE": "Заменить хвост \u00ab\u2014 копия\u00bb на дату изменения файла",
     "HELP_APPEND_DATE": "Добавить дату изменения в конец имени",
+    "HELP_APPEND_EXIF_DATE": "Добавить дату съёмки (EXIF) в конец имени",
+    "HELP_FIX_DATES_EXIF": "Даты изменения/создания/доступа \u2014 из EXIF даты съёмки",
     "HELP_CLONE_DATE_MODIFIED": "Создать копию рядом, добавив дату изменения к имени",
     "HELP_CLONE_DATE_CREATED": "Создать копию рядом, добавив дату создания к имени",
     "HELP_CLONE_NUMBERED": "Создать копию рядом с порядковым номером (_1, _2, _3...)",
@@ -103,6 +108,7 @@ STRINGS = {
     "SHORTCUT_DEAD": "СЛОМАН \u2014 файл по этому пути не найден",
     "SHORTCUT_UNREADABLE": "не удалось прочитать ярлык (повреждён?)",
     "SHORTCUT_VIRTUAL": "ведёт на системное расположение (например, Панель управления) \u2014 не обычный файл, метаданные недоступны",
+    "SHORTCUT_MSI_UNRESOLVED": "ярлык Windows Installer на приложение, устанавливаемое по требованию (advertised) \u2014 компонент не найден в системе, точный путь неизвестен до запуска",
     "META_BITRATE_TYPE": "Тип битрейта",
     "META_VBR": "Переменный (VBR)",
     "META_CBR": "Постоянный (CBR)",
@@ -155,8 +161,17 @@ STRINGS = {
 
     "BTN_COPY": "Копировать",
     "BTN_OPEN": "Открыть",
+    "BTN_OPEN_MENU": "Открыть...",
     "BTN_REVEAL": "Показать в папке",
     "BTN_CLOSE": "Закрыть",
+    "MAP_OPEN_BUILTIN": "1. Открыть во встроенном браузере",
+    "MAP_OPEN_DEFAULT": "2. Открыть во внешнем браузере по умолчанию",
+    "MAP_OPEN_OTHER": "3. Открыть в другом",
+    "MAP_NO_BROWSERS": "Установленные браузеры не найдены",
+    "MAP_HELPER_NOT_FOUND": "Встроенный просмотрщик не найден.",
+    "MAP_HELPER_EXTRACT_HINT": "Проверьте, что распакован весь архив и папка map-probe находится рядом с FileFolderInfo.dll.",
+    "MAP_HELPER_START_ERROR_FMT": "Не удалось запустить встроенный браузер (код ошибки Windows: %lu).",
+    "MAP_BROWSER_START_ERROR_FMT": "Не удалось запустить браузер \"%ls\" (код %u).",
 
     "YEAR_LOWER": "года",
     "YEAR_UPPER": "Года",
@@ -167,6 +182,7 @@ STRINGS = {
     "MSG_CLONE_DONE_FMT": "Готово.\nСоздано копий: %d\nПропущено: %d",
     "MSG_CLONE_ERROR": "Не удалось создать объект копирования (IFileOperation).",
     "MSG_ROTATE_DONE_FMT": "Готово.\nПовёрнуто: %d\nПропущено: %d",
+    "MSG_FIXDATE_DONE_FMT": "Готово.\nИсправлено: %d\nПропущено: %d",
     "MSG_TREE_EMPTY": "Внутри пусто \u2014 нечего копировать.",
     "MSG_ERR_TIME_PREFIX": "Не удалось прочитать время файла:",
     "MSG_MIXED_WARN": "В выделении есть и файлы, и папки \u2014 каждый объект обрабатывается по своему типу (расширение сохраняется только у файлов).",
@@ -194,7 +210,8 @@ lines.append("    " + ", ".join(f'L"{esc(m)}"' for m in MONTHS_UPPER))
 lines.append("};")
 lines.append("")
 
-with open("/home/claude/fileinfo/inc/strings.h", "w", encoding="utf-8") as f:
+output_path = Path(__file__).resolve().parent / "inc" / "strings.h"
+with open(output_path, "w", encoding="utf-8") as f:
     f.write("\n".join(lines) + "\n")
 
 print("done, lines:", len(lines))

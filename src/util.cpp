@@ -309,6 +309,8 @@ LRESULT CALLBACK InfoDlgProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 if (row.action == 2) {
                     std::wstring params = L"/select,\"" + row.value + L"\"";
                     ShellExecuteW(hwnd, L"open", L"explorer.exe", params.c_str(), nullptr, SW_SHOWNORMAL);
+                } else if (row.action == 3) {
+                    OpenMapUrl(hwnd, GetDlgItem(hwnd, id), row.value);
                 } else {
                     ShellExecuteW(hwnd, L"open", row.value.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
                 }
@@ -471,7 +473,8 @@ int ShowInfoDialog(HWND owner, const std::wstring& title, const std::vector<Info
 
         HWND hOpenBtn = nullptr;
         if (rows[i].action != 0) {
-            const wchar_t* btnText = (rows[i].action == 2) ? S_BTN_REVEAL : S_BTN_OPEN;
+            const wchar_t* btnText = (rows[i].action == 2) ? S_BTN_REVEAL
+                                     : (rows[i].action == 3) ? S_BTN_OPEN_MENU : S_BTN_OPEN;
             hOpenBtn = CreateWindowExW(0, L"BUTTON", btnText,
                 WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
                 openX, y0, openBtnW, baseRowH,

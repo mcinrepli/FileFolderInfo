@@ -421,10 +421,10 @@ std::vector<InfoRow> BuildRegularFileMetadataRows(const std::wstring& targetPath
                          L"https://pastvu.com/?g=%ls,%ls&z=17&s=osm&t=openstreetmap&type=1&comments=1",
                          latBuf, lonBuf);
 
-                rows.push_back({ S_META_MAP_OSM, urlOsm, 1 });
-                rows.push_back({ S_META_MAP_GOOGLE, urlGoogle, 1 });
-                rows.push_back({ S_META_MAP_YANDEX, urlYandex, 1 });
-                rows.push_back({ S_META_MAP_PASTVU, urlPastvu, 1 });
+                rows.push_back({ S_META_MAP_OSM, urlOsm, 3 });
+                rows.push_back({ S_META_MAP_GOOGLE, urlGoogle, 3 });
+                rows.push_back({ S_META_MAP_YANDEX, urlYandex, 3 });
+                rows.push_back({ S_META_MAP_PASTVU, urlPastvu, 3 });
             }
         }
 

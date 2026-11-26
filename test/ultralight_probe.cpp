@@ -1,7 +1,10 @@
 #include <windows.h>
 #include <windowsx.h>
+#include <shellapi.h>
 #include <cstdio>
 #include <cstdarg>
+#include <string>
+#include <vector>
 
 // Официальные заголовки — только ради типов (ULView, ULRenderer, структуры)
 // и сигнатур для typedef'ов. Сами функции берём через GetProcAddress, не
@@ -13,9 +16,10 @@
 // ---- сигнатуры нужных функций (минимальный набор для offscreen-рендера) ----
 typedef void          (STDAPICALLTYPE *Fn_ulEnablePlatformFontLoader)();
 typedef void          (STDAPICALLTYPE *Fn_ulEnablePlatformFileSystem)(ULString);
-typedef void           (STDAPICALLTYPE *Fn_ulEnableDefaultLogger)(ULString);
+typedef void          (STDAPICALLTYPE *Fn_ulEnableDefaultLogger)(ULString);
 typedef ULString      (STDAPICALLTYPE *Fn_ulCreateString)(const char*);
-typedef void           (STDAPICALLTYPE *Fn_ulDestroyString)(ULString);
+typedef ULString      (STDAPICALLTYPE *Fn_ulCreateStringUTF16)(ULChar16*, size_t);
+typedef void          (STDAPICALLTYPE *Fn_ulDestroyString)(ULString);
 typedef ULConfig       (STDAPICALLTYPE *Fn_ulCreateConfig)();
 typedef void           (STDAPICALLTYPE *Fn_ulDestroyConfig)(ULConfig);
 typedef void           (STDAPICALLTYPE *Fn_ulConfigSetResourcePathPrefix)(ULConfig, ULString);
@@ -55,6 +59,7 @@ struct UL {
     Fn_ulEnablePlatformFileSystem        EnablePlatformFileSystem;
     Fn_ulEnableDefaultLogger             EnableDefaultLogger;
     Fn_ulCreateString                    CreateString;
+    Fn_ulCreateStringUTF16               CreateStringUTF16;
     Fn_ulDestroyString                   DestroyString;
     Fn_ulCreateConfig                    CreateConfig;
     Fn_ulDestroyConfig                   DestroyConfig;
@@ -358,6 +363,47 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 
 int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int)
 {
+    int argc = 0;
+    LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+    if (!argv) {
+        MessageBoxW(nullptr, L"Не удалось разобрать командную строку.", L"FileFolderInfo map viewer", MB_OK | MB_ICONERROR);
+        return 1;
+    }
+
+    std::wstring externalUrl;
+    if (argc == 2) {
+        externalUrl = argv[1];
+        bool isHttp = externalUrl.size() >= 7 &&
+            (CompareStringOrdinal(externalUrl.data(), 7, L"http://", 7, TRUE) == CSTR_EQUAL ||
+             (externalUrl.size() >= 8 && CompareStringOrdinal(externalUrl.data(), 8, L"https://", 8, TRUE) == CSTR_EQUAL));
+        if (!isHttp) {
+            LocalFree(argv);
+            MessageBoxW(nullptr, L"Ожидался один HTTP/HTTPS URL.", L"FileFolderInfo map viewer", MB_OK | MB_ICONERROR);
+            return 2;
+        }
+    } else if (argc != 1) {
+        LocalFree(argv);
+        MessageBoxW(nullptr, L"Передайте один HTTP/HTTPS URL или запустите без параметров для тестовой карты.",
+                    L"FileFolderInfo map viewer", MB_OK | MB_ICONERROR);
+        return 2;
+    }
+    LocalFree(argv);
+
+    // Относительные пути к ресурсам и логам всегда считаются от папки exe,
+    // а не от текущего каталога Explorer или вызывающего BAT.
+    std::vector<wchar_t> exePath(32768, L'\0');
+    DWORD exeLength = GetModuleFileNameW(nullptr, exePath.data(), static_cast<DWORD>(exePath.size()));
+    if (!exeLength || exeLength >= exePath.size()) {
+        MessageBoxW(nullptr, L"Не удалось определить папку map viewer.", L"FileFolderInfo map viewer", MB_OK | MB_ICONERROR);
+        return 1;
+    }
+    std::wstring exeDirectory(exePath.data(), exeLength);
+    size_t lastSlash = exeDirectory.find_last_of(L"\\/");
+    if (lastSlash == std::wstring::npos || !SetCurrentDirectoryW(exeDirectory.substr(0, lastSlash).c_str())) {
+        MessageBoxW(nullptr, L"Не удалось перейти в папку map viewer.", L"FileFolderInfo map viewer", MB_OK | MB_ICONERROR);
+        return 1;
+    }
+
     g_forceRepaint = GetEnvFlag(L"FFI_FORCE_REPAINT");
     g_noAnim       = GetEnvFlag(L"FFI_NOANIM");
     g_diag         = GetEnvFlag(L"FFI_DIAG");
@@ -375,6 +421,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int)
     LOAD(hAppCore, EnablePlatformFileSystem);
     LOAD(hAppCore, EnableDefaultLogger);
     LOAD(hUltralight, CreateString);
+    LOAD(hUltralight, CreateStringUTF16);
     LOAD(hUltralight, DestroyString);
     LOAD(hUltralight, CreateConfig);
     LOAD(hUltralight, DestroyConfig);
@@ -431,16 +478,31 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int)
 
     g_renderer = ul.CreateRenderer(config);
     ul.DestroyConfig(config);
+    if (!g_renderer) {
+        MessageBoxW(nullptr, L"Ultralight не смог создать renderer.", L"FileFolderInfo map viewer", MB_OK | MB_ICONERROR);
+        return 1;
+    }
 
     ULViewConfig vc = ul.CreateViewConfig();
     ul.ViewConfigSetIsAccelerated(vc, false); // CPU-рендер — без DirectX
     g_view = ul.CreateView(g_renderer, 800, 600, vc, nullptr);
     ul.DestroyViewConfig(vc);
+    if (!g_view) {
+        ul.DestroyRenderer(g_renderer);
+        g_renderer = nullptr;
+        MessageBoxW(nullptr, L"Ultralight не смог создать view.", L"FileFolderInfo map viewer", MB_OK | MB_ICONERROR);
+        return 1;
+    }
 
-    const char* pageUrl = g_noAnim
-        ? "file:///leaflet_page/page.html?noanim=1"
-        : "file:///leaflet_page/page.html";
-    ULString url = ul.CreateString(pageUrl);
+    std::wstring pageUrl;
+    if (!externalUrl.empty()) {
+        pageUrl = externalUrl;
+    } else {
+        pageUrl = g_noAnim ? L"file:///leaflet_page/page.html?noanim=1"
+                           : L"file:///leaflet_page/page.html";
+    }
+    ULString url = ul.CreateStringUTF16(reinterpret_cast<ULChar16*>(const_cast<wchar_t*>(pageUrl.c_str())),
+                                        pageUrl.size());
     ul.ViewLoadURL(g_view, url);
     ul.DestroyString(url);
 
@@ -451,9 +513,20 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int)
     wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
     RegisterClassW(&wc);
 
-    g_hwnd = CreateWindowW(L"UltralightProbeWnd", L"Ultralight probe",
+    const wchar_t* windowTitle = externalUrl.empty()
+        ? L"Ultralight probe"
+        : L"FileFolderInfo — встроенная карта";
+    g_hwnd = CreateWindowW(L"UltralightProbeWnd", windowTitle,
                            WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 820, 640,
                            nullptr, nullptr, hInst, nullptr);
+    if (!g_hwnd) {
+        ul.DestroyView(g_view);
+        ul.DestroyRenderer(g_renderer);
+        g_view = nullptr;
+        g_renderer = nullptr;
+        MessageBoxW(nullptr, L"Не удалось создать окно встроенной карты.", L"FileFolderInfo map viewer", MB_OK | MB_ICONERROR);
+        return 1;
+    }
     ShowWindow(g_hwnd, SW_SHOW);
     SetForegroundWindow(g_hwnd);
     SetFocus(g_hwnd);

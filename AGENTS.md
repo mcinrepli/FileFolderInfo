@@ -12,8 +12,8 @@
 sudo apt-get update -qq
 sudo apt-get install -y --fix-missing mingw-w64 mingw-w64-tools zip unzip
 make           # dist/FileFolderInfo.dll
-make probe     # dist/ultralight_probe.exe (офф-скрин карта Ultralight)
-make package   # dist/ultralight_test.zip (exe+DLL+resources+page) и dist/src.zip
+make probe     # dist/ultralight_probe.exe (standalone Leaflet-проба)
+make package   # единый dist/FileFolderInfo-Win10-x64-test.zip (DLL + helper + BAT + исходники)
 ```
 
 `--fix-missing` нужен: snapshot.debian.org периодически отдаёт 503/504.
@@ -45,7 +45,8 @@ msvcrt, ole32). Ultralight подгружается динамически и в
 ## Ultralight (карта)
 
 - SDK в репо: `inc/ultralight/{bin/*.dll,resources/,license/,заголовки}`.
-- Проба: `test/ultralight_probe.cpp`, страница `test/leaflet_probe_page/`.
+- Проба/helper: `test/ultralight_probe.cpp`, страница `test/leaflet_probe_page/`.
+- При запуске из FileFolderInfo GPS URL передаётся отдельному `map-probe/FileFolderInfoMap.exe`; WebCore не загружается внутрь Explorer. Не менять default associations ради выбора браузера.
 - Схема: `LoadLibrary`/`GetProcAddress` (MSVC-.lib с MinGW не дружат), чистый
   C API, офф-скрин CPU-рендер (`ulCreateRenderer`), битмапа через GDI
   `StretchDIBits`. ОБЯЗАТЕЛЬНО `ulEnablePlatformFontLoader` и
