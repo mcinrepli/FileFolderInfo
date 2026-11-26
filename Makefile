@@ -29,22 +29,21 @@ $(PROBE): test/ultralight_probe.cpp
 
 probe: $(PROBE)
 
-# Готовый к запуску на Windows архив: exe + 4 DLL + resources/ + leaflet_page/.
-# Всё в одной папке (Ultralight грузит DLL и ресурсы относительно exe).
-package: $(PROBE)
-	rm -rf build/ultralight_test dist/ultralight_test.zip dist/src.zip
-	mkdir -p build/ultralight_test/leaflet_page
-	cp $(PROBE) build/ultralight_test/
-	cp inc/ultralight/bin/*.dll build/ultralight_test/
-	cp -r inc/ultralight/resources build/ultralight_test/
-	cp -r inc/ultralight/license build/ultralight_test/
-	cp -r test/leaflet_probe_page/. build/ultralight_test/leaflet_page/
-	cd build && zip -qr ../dist/ultralight_test.zip ultralight_test
-	zip -qr dist/src.zip src inc Makefile test/ultralight_probe.cpp \
-	    test/leaflet_probe_page dist/README.md dist/install.bat dist/uninstall.bat \
-	    -x 'inc/ultralight/bin/*' -x 'inc/ultralight/resources/*'
-	@echo "Готово: dist/ultralight_test.zip и dist/src.zip"
+# Один самодостаточный тестовый архив: DLL + BAT + исходники + map-probe.
+PACKAGE = dist/FileFolderInfo-Win10-x64-test.zip
+PACKAGE_DIR = build/FileFolderInfo-Win10-x64-test
+package: $(TARGET) $(PROBE)
+	rm -rf $(PACKAGE_DIR) $(PACKAGE)
+	mkdir -p $(PACKAGE_DIR)/source $(PACKAGE_DIR)/map-probe/leaflet_page
+	cp $(TARGET) dist/install.bat dist/uninstall.bat dist/TEST_PACKAGE_README.txt $(PACKAGE_DIR)/
+	cp -a src inc Makefile $(PACKAGE_DIR)/source/
+	cp $(PROBE) test/run_probe.bat test/run_probe_noanim.bat $(PACKAGE_DIR)/map-probe/
+	cp -a inc/ultralight/bin/*.dll $(PACKAGE_DIR)/map-probe/
+	cp -a inc/ultralight/resources inc/ultralight/license $(PACKAGE_DIR)/map-probe/
+	cp -a test/leaflet_probe_page/. $(PACKAGE_DIR)/map-probe/leaflet_page/
+	cd build && zip -qr ../$(PACKAGE) $(notdir $(PACKAGE_DIR))
+	@echo "Готово: $(PACKAGE)"
 
 clean:
 	rm -rf build
-	rm -f dist/FileFolderInfo.dll $(PROBE)
+	rm -f dist/FileFolderInfo.dll $(PROBE) $(PACKAGE)
